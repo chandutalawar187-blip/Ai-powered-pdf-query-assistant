@@ -5,4 +5,5 @@ google-genai
 pypdf
 llama-index
 llama-index-embeddings-google
-llama-index-vector-stores-simple
+llama-index-vector-stores-faiss # Fast vector store
+faiss-cpu # Vector store backend
