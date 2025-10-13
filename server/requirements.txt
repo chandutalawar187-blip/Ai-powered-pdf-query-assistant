@@ -1,0 +1,8 @@
+Flask
+flask-cors
+python-dotenv
+google-genai
+pypdf
+llama-index
+llama-index-embeddings-google
+llama-index-vector-stores-simple
