@@ -1,15 +1,15 @@
 {
   "files": {
-    "main.css": "/Ai-powered-pdf-query-assistant/static/css/main.b9e433fa.css",
-    "main.js": "/Ai-powered-pdf-query-assistant/static/js/main.1e292254.js",
+    "main.css": "/Ai-powered-pdf-query-assistant/static/css/main.1c5626f8.css",
+    "main.js": "/Ai-powered-pdf-query-assistant/static/js/main.7bfc9428.js",
     "static/js/453.eb570f4f.chunk.js": "/Ai-powered-pdf-query-assistant/static/js/453.eb570f4f.chunk.js",
     "index.html": "/Ai-powered-pdf-query-assistant/index.html",
-    "main.b9e433fa.css.map": "/Ai-powered-pdf-query-assistant/static/css/main.b9e433fa.css.map",
-    "main.1e292254.js.map": "/Ai-powered-pdf-query-assistant/static/js/main.1e292254.js.map",
+    "main.1c5626f8.css.map": "/Ai-powered-pdf-query-assistant/static/css/main.1c5626f8.css.map",
+    "main.7bfc9428.js.map": "/Ai-powered-pdf-query-assistant/static/js/main.7bfc9428.js.map",
     "453.eb570f4f.chunk.js.map": "/Ai-powered-pdf-query-assistant/static/js/453.eb570f4f.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.b9e433fa.css",
-    "static/js/main.1e292254.js"
+    "static/css/main.1c5626f8.css",
+    "static/js/main.7bfc9428.js"
   ]
 }
