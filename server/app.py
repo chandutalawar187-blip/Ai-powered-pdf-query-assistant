@@ -1,4 +1,4 @@
-# server/app.py (FINAL COMPLETE BACKEND CODE WITH COMPARISON MODE)
+# server/app.py (FINAL COMPLETE BACKEND CODE WITH CONVERSATIONAL HISTORY)
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -23,6 +23,7 @@ client = None
 uploaded_pdf_path = None
 document_text_chunks = []
 document_pages = {}
+query_history = []  # <--- ACTIVE LEARNING: Global list to store conversation history
 
 try:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -41,8 +42,6 @@ def extract_and_crop_image(pdf_path, page_number):
     Renders the entire page where a figure is cited and returns it as a Base64 PNG.
     This ensures the full figure is displayed, bypassing complex bounding box math.
     """
-    # Note: Using try/finally to close the doc is best practice but complicated with globals.
-    # Relying on system cleanup for the hackathon.
     try:
         doc = fitz.open(pdf_path)
         # Page numbers in PyMuPDF are 0-indexed
@@ -71,9 +70,10 @@ def extract_and_crop_image(pdf_path, page_number):
 
 def extract_text_and_chunk(pdf_path):
     """Extracts text and chunks, storing page number metadata."""
-    global document_text_chunks, document_pages
+    global document_text_chunks, document_pages, query_history
     document_text_chunks.clear()
     document_pages.clear()
+    query_history.clear()  # Clear history on new PDF upload
 
     try:
         reader = pypdf.PdfReader(pdf_path)
@@ -122,6 +122,8 @@ def upload_pdf():
 @app.route('/query', methods=['POST'])
 def handle_query():
     """Dynamically handles Full Text, Verbatim QA, or COMPARISON extraction."""
+    global query_history  # Access global history list
+
     if not client:
         return jsonify({"error": "AI client is not initialized. Check API Key."}), 500
 
@@ -132,6 +134,13 @@ def handle_query():
         return jsonify({"error": "Please upload a PDF first."}), 400
 
     lower_q = question.lower()
+
+    # --- PREPARE HISTORY CONTEXT ---
+    history_context = "\n".join(query_history[-5:])  # Use last 5 interactions for context
+    if history_context:
+        history_context = "--- Conversation History ---\n" + history_context + "\n------------------------------\n"
+    else:
+        history_context = ""
 
     # --- MODE 1: FULL TEXT EXTRACTION (Bypass LLM) ---
     full_text_keywords = ['explain all the pdf', 'give me the content', 'show all content', 'extract all text']
@@ -156,7 +165,7 @@ def handle_query():
         relevant_chunks = [
             chunk for chunk in document_text_chunks
             if any(kw in chunk.lower() for kw in keywords)
-        ][:30]
+        ][:30]  # Retrieve up to 30 chunks for a deep comparison
 
         context = "\n---\n".join(relevant_chunks)
 
@@ -190,27 +199,47 @@ def handle_query():
         # --- MODE 3: HYPER-VERBATIM EXTRACTION (DEFAULT RAG) ---
         mode = "VERBATIM"
 
-        # Simple keyword retrieval logic
-        keywords = lower_q.split()
+        # --- MODIFIED UNIVERSAL RETRIEVAL LOGIC ---
+
+        # 1. Universal Cleaning: Remove instructional fluff words only
+        fluff_words = [
+            'name the', 'broad categories of', 'explain them briefly', 'the four', 'and', 'for',
+            'marks', 'briefly', 'neat diagram', 'with a', 'explain the', 'following the', 'model',
+            'hosts', 'communication', 'what is', 'what are', 'please explain', 'describe',
+            'definition', 'type of', 'in detail'
+        ]
+
+        cleaned_query_parts = lower_q.split()
+        final_keywords = []
+        for word in cleaned_query_parts:
+            # Check if the word is NOT a fluff word
+            if word not in fluff_words and len(word) > 2:
+                final_keywords.append(word)
+
+        # Use the keywords from the question directly
+        keywords = final_keywords
+
         relevant_chunks = [
             chunk for chunk in document_text_chunks
             if any(kw in chunk.lower() for kw in keywords)
-        ][:20]
+        ][:25]  # Retrieving up to 25 chunks for complex answers
+
         context = "\n---\n".join(relevant_chunks)
         mode_info = f"Verbatim Extraction Mode (Using {len(relevant_chunks)} chunks)"
 
-        # Hyper-Strict Extraction Instruction
+        # --- HYPER-STRICT EXTRACTION INSTRUCTION (Universal for Lists/Explanations) ---
         system_instruction = (
             "You are a MUTE, Document-Bound Extraction Specialist. Your ONLY source of knowledge is the CONTEXT. "
-            "Your task is to identify and return the single most relevant sentence or phrase that DIRECTLY and VERBATIM answers the user's question from the CONTEXT provided.\n"
+            "Use the CONTEXT and the optional CONVERSATION HISTORY below to fully answer the user's question, especially if it involves a list, explanation, or a reference to a diagram.\n"
             "RULES:\n"
-            "1. **MUST BE VERBATIM:** The answer MUST be copied EXACTLY from the CONTEXT.\n"
-            "2. **OUTPUT FORMAT:** The entire response MUST be the exact quote(s) followed by the citation [Page X].\n"
-            "3. **IMAGE HINT:** If the answer explicitly references a figure (e.g., Figure 4.7), your output must ALSO include the reference [FIG:Page X] at the end.\n"
-            "4. **FAILURE:** If the answer is not in the context, reply with the exact phrase: 'The required information was not found in the uploaded document.'"
+            "1. **MUST BE VERBATIM:** The entire output MUST be copied EXACTLY from the CONTEXT. Do not reword or add any summary/commentary.\n"
+            "2. **OUTPUT FORMAT:** The response MUST include all relevant category names and their definitions/explanations as found in the text.\n"
+            "3. **CITATION:** The entire response MUST be the exact quote(s) followed by the citation [Page X]. If the answer spans multiple chunks/pages, include all relevant citations.\n"
+            "4. **IMAGE HINT (CRITICAL):** If the answer explicitly references a figure or if the question asks for a 'diagram,' your output must ALSO include the reference [FIG:Page X] at the end, using the page number where the diagram/figure is found in the context. If multiple pages are relevant, use the page number where the main diagram is located.\n"
+            "5. **FAILURE:** If the answer is not in the context, reply with the exact phrase: 'The required information was not found in the uploaded document.'"
         )
-        # Use standard prompt if not comparison
-        prompt = f"User Question: {question}\n\nCONTEXT:\n{context}"
+        # Use standard prompt
+        prompt = f"CONVERSATION HISTORY: {history_context} \nUser Question: {question}\n\nCONTEXT:\n{context}"
 
     # --- 5. EXECUTE GEMINI QUERY ---
     image_data = None
@@ -222,6 +251,10 @@ def handle_query():
             config={"system_instruction": system_instruction}
         )
         answer_text = response.text
+
+        # --- SUCCESS: UPDATE HISTORY ---
+        query_history.append(f"Q: {question}")
+        query_history.append(f"A: {answer_text[:50]}...")  # Store short version of answer
 
         # --- IMAGE DETECTION AND EXTRACTION (Only for VERBATIM mode) ---
         if mode == "VERBATIM" and "[FIG:" in answer_text and uploaded_pdf_path:
