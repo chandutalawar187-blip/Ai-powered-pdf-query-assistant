@@ -1,4 +1,5 @@
-# server/app.py (FINAL HACKATHON CODE - FOCUS: VERBATIM EXTRACTION)
+# server/app.py (FINAL COMPLETE BACKEND CODE)
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -6,14 +7,23 @@ import os
 import pypdf
 from google import genai
 from google.genai.errors import APIError
+import fitz  # PyMuPDF for image extraction
+import io
+from PIL import Image
+import base64
+import tempfile  # For saving files during the session
 
 # --- INITIAL SETUP ---
 load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Initialize Gemini Client (Checking API Key status)
+# Global state
 client = None
+uploaded_pdf_path = None
+document_text_chunks = []
+document_pages = {}
+
 try:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     if not GEMINI_API_KEY:
@@ -23,13 +33,44 @@ try:
 except Exception as e:
     print(f"Error initializing Gemini client: {e}")
 
-# Global state to hold the PDF text and pages
-document_text_chunks = []
-document_pages = {}
 
+# server/app.py (Updated extract_and_crop_image function)
+
+def extract_and_crop_image(pdf_path, page_number):
+    """
+    Renders the entire page where a figure is cited and returns it as a Base64 PNG.
+    This ensures the full figure is displayed, bypassing complex bounding box math.
+    """
+    try:
+        doc = fitz.open(pdf_path)
+        # Page numbers in PyMuPDF are 0-indexed
+        page = doc[page_number - 1]
+
+        # We will render the ENTIRE page as an image to ensure the whole figure is visible
+        # Use a high resolution (DPI) for a clear image display in the web browser
+        zoom_matrix = fitz.Matrix(2, 2)  # 200% zoom (2x DPI)
+        pix = page.get_pixmap(matrix=zoom_matrix)
+
+        # Convert Pixmap to PNG bytes in memory
+        img_bytes = pix.tobytes(output="png")
+
+        # Encode to Base64
+        base64_img = base64.b64encode(img_bytes).decode('utf-8')
+
+        return f"data:image/png;base64,{base64_img}"
+
+    except Exception as e:
+        print(f"IMAGE EXTRACTION FAILED on page {page_number}: {e}")
+        return None
+    finally:
+        # It's important to close the PyMuPDF document
+        if 'doc' in locals() and not doc.is_closed:
+            doc.close()
+
+# --- CORE PDF PROCESSING ---
 
 def extract_text_and_chunk(pdf_path):
-    """Extracts text and chunks from PDF, storing page number metadata."""
+    """Extracts text and chunks, storing page number metadata."""
     global document_text_chunks, document_pages
     document_text_chunks.clear()
     document_pages.clear()
@@ -41,7 +82,6 @@ def extract_text_and_chunk(pdf_path):
             page_number = i + 1
             document_pages[page_number] = text
 
-            # Use larger chunks to ensure full sentences/paragraphs are retrieved
             chunk_size = 1000
             for j in range(0, len(text), chunk_size):
                 chunk = text[j:j + chunk_size]
@@ -56,16 +96,21 @@ def extract_text_and_chunk(pdf_path):
 
 @app.route('/upload', methods=['POST'])
 def upload_pdf():
-    """Handles file upload and sets up the global text chunks."""
+    """Handles file upload, saves it for image extraction, and processes text."""
+    global uploaded_pdf_path
+
     if 'pdf' not in request.files:
         return jsonify({"error": "No file part"}), 400
 
     pdf_file = request.files['pdf']
-    file_path = f"documents/{pdf_file.filename}"
-    os.makedirs('documents', exist_ok=True)
-    pdf_file.save(file_path)
 
-    if extract_text_and_chunk(file_path):
+    # CRITICAL: Save the file to a known temporary location for PyMuPDF access later
+    temp_dir = tempfile.gettempdir()
+    uploaded_pdf_path = os.path.join(temp_dir, pdf_file.filename)
+
+    pdf_file.save(uploaded_pdf_path)
+
+    if extract_text_and_chunk(uploaded_pdf_path):
         return jsonify({
             "message": f"PDF processed successfully. {len(document_text_chunks)} chunks indexed.",
             "chunks_count": len(document_text_chunks)
@@ -74,13 +119,11 @@ def upload_pdf():
         return jsonify({"error": "Failed to process PDF."}), 500
 
 
-# server/app.py (FINAL DEBUGGING VERSION OF handle_query)
-
-# server/app.py (Updated handle_query to force ALL context for specific queries)
-
 @app.route('/query', methods=['POST'])
 def handle_query():
-    # ... (all initial checks remain the same) ...
+    """Determines mode, executes query, and attempts image extraction."""
+    if not client:
+        return jsonify({"error": "AI client is not initialized. Check API Key."}), 500
 
     data = request.json
     question = data.get('question', '').strip()
@@ -94,7 +137,6 @@ def handle_query():
     is_full_text_request = any(keyword in lower_q for keyword in full_text_keywords)
 
     if is_full_text_request:
-        # Returns raw text directly (no LLM call)
         full_text = "\n\n".join(document_text_chunks)
         return jsonify({
             "answer": full_text,
@@ -102,64 +144,37 @@ def handle_query():
             "mode": "FULL_TEXT"
         })
 
-    # --- 2. DYNAMIC CONTEXT ASSEMBLY FOR LLM CALL ---
+    # --- 2. MODE: HYPER-VERBATIM EXTRACTION (RAG) ---
 
-    # NEW MAGIC KEYWORD to force the model to "see" the entire document for summarization/explanation
-    scan_whole_pdf_keywords = ['scan the whole pdf', 'explain the whole document', 'full summary']
-    is_full_scan_request = any(keyword in lower_q for keyword in scan_whole_pdf_keywords)
+    # Simple keyword retrieval logic (aggressive)
+    keywords = lower_q.split()
+    # Ensure necessary keywords are included (e.g., if the user asks "What is it?")
+    essential_keywords = set(['iot', 'atm', 'remote anchoring', 'anchoring'])
+    keywords = list(set(keywords) | essential_keywords)
 
-    if is_full_scan_request:
-        # --- MODE: AGGRESSIVE FULL-CONTEXT SUMMARIZATION ---
+    relevant_chunks = [
+        chunk for chunk in document_text_chunks
+        if any(kw in chunk.lower() for kw in keywords)
+    ][:100]
 
-        # AGGRESSION: Join ALL chunks (the entire PDF text)
-        context = "\n---\n".join(document_text_chunks)
+    context = "\n---\n".join(relevant_chunks)
+    mode_info = f"Verbatim Extraction Mode (Using {len(relevant_chunks)} chunks)"
 
-        # INSTRUCTION: Relax the verbatim rule for synthesis
-        # HYPER-STRICT EXTRACTION INSTRUCTION (ZERO-TOLERANCE)
-        system_instruction = (
-            "You are a MUTE, Document-Bound Extraction Machine. "
-            "Your ONLY source of knowledge is the CONTEXT provided below. "
-            "If the information to answer the question is NOT in the CONTEXT, you have NO knowledge of it.\n\n"
-            "RULES:\n"
-            "1. **STRICT VERBATIM:** Your answer MUST be copied EXACTLY, word-for-word, from the CONTEXT.\n"
-            "2. **NO WORLD KNOWLEDGE:** You MUST NOT use ANY information or external knowledge you may possess about the topic (e.g., historical dates, general definitions, related concepts). Your training data is useless for this task.\n"
-            "3. **OUTPUT:** The entire output MUST be the exact quote followed immediately by the citation [Page X].\n"
-            "4. **FAILURE MODE (CRITICAL):** If the answer is not in the context, you MUST reply with the exact phrase: 'The required information was not found in the uploaded document.\n"
-            "5. **STRICT RULES:** Explain exact as in the pdf, don't take the answers from the any other source just give the exact answer that is present in the notes."
-        )
-        mode_info = "FULL_SCAN Summary Mode (Caution: Context may be large)"
-        mode = "SUMMARY"
+    # HYPER-STRICT EXTRACTION INSTRUCTION (Zero-Tolerance)
+    system_instruction = (
+        "You are a MUTE, Document-Bound Extraction Specialist. Your ONLY source of knowledge is the CONTEXT. "
+        "Your task is to identify and return the single most relevant sentence or phrase that DIRECTLY and VERBATIM answers the user's question from the CONTEXT provided.\n"
+        "RULES:\n"
+        "1. **MUST BE VERBATIM:** The answer MUST be copied EXACTLY from the CONTEXT.\n"
+        "2. **NO 'THINKING':** You MUST NOT summarize, paraphrase, or add any commentary/extra words.\n"
+        "3. **CITATION:** The entire output MUST be the exact quote(s) followed by the citation [Page X].\n"
+        "4. **IMAGE HINT:** If the answer explicitly references a figure (e.g., Figure 4.7), your output must ALSO include the reference [FIG:Page X] at the end, using the page number where the figure is located.\n"
+        "5. **FAILURE:** If the answer is not in the context, reply with the exact phrase: 'The required information was not found in the uploaded document.'"
+    )
 
-    else:
-        # --- MODE: HYPER-VERBATIM EXTRACTION (RAG) ---
-
-        # Default RAG mode: Retrieve only relevant chunks based on keywords
-        keywords = lower_q.split()
-        relevant_chunks = []
-        for chunk in document_text_chunks:
-            if any(kw in chunk.lower() for kw in keywords):
-                relevant_chunks.append(chunk)
-            if len(relevant_chunks) >= 20:
-                break
-
-        context = "\n---\n".join(relevant_chunks)
-
-        # INSTRUCTION: Hyper-Strict Verbatim Rules (as previously perfected)
-        system_instruction = (
-            "You are a meticulous Document Extraction Specialist. Your task is to identify and return the single most relevant sentence or phrase "
-            "that DIRECTLY and VERBATIM answers the user's question from the CONTEXT provided. "
-            "RULES: 1. MUST BE VERBATIM. 2. NO 'THINKING'. 3. CITATION: MUST include the source page number [Page X]. 4. FAILURE: If not found, MUST reply with the exact phrase: 'The required information was not found in the uploaded document.'"
-        )
-        mode_info = f"Verbatim Extraction Mode (Using {len(relevant_chunks)} relevant chunks)"
-        mode = "VERBATIM"
-
-    # --- 3. EXECUTE GEMINI QUERY (for both Summary and Verbatim) ---
+    # --- 3. EXECUTE GEMINI QUERY ---
     prompt = f"User Question: {question}\n\nCONTEXT:\n{context}"
-
-    print("-" * 50)
-    print(f"DEBUG: Context Sent to Gemini:\n{context}")
-    print("-" * 50)
-    # ... then proceed with the Gemini call
+    image_data = None
 
     try:
         response = client.models.generate_content(
@@ -168,21 +183,37 @@ def handle_query():
             config={"system_instruction": system_instruction}
         )
 
-        # ... (Safety and success checks remain the same) ...
+        answer_text = response.text
 
+        # --- IMAGE DETECTION AND EXTRACTION ---
+        if uploaded_pdf_path and "[FIG:" in answer_text:
+            try:
+                # Extract page number from the Gemini output
+                page_match = answer_text.split('[FIG:Page ')[1].split(']')[0]
+                page_num = int(page_match)
+
+                # Call the image extraction helper
+                image_data = extract_and_crop_image(uploaded_pdf_path, page_num)
+
+            except Exception as e:
+                print(f"IMAGE PROCESSING/EXTRACTION ERROR: {e}")
+
+        # Successful response
         return jsonify({
-            "answer": response.text,
+            "answer": answer_text,
             "sources": mode_info,
-            "mode": mode
+            "mode": "VERBATIM",
+            "image_data": image_data  # Send Base64 image data
         })
+
     except APIError as e:
-        # ... (error handling remains the same) ...
+        user_facing_error = f"API FAILED (QUOTA/KEY): {str(e)[:100]}..."
         return jsonify({"error": user_facing_error}), 500
     except Exception as e:
-        # ... (error handling remains the same) ...
-        return jsonify({"error": f"SERVER CRASHED: Unhandled Python Error ({e.__class__.__name__})."}), 500
+        user_facing_error = f"SERVER CRASHED: Unhandled Python Error ({e.__class__.__name__})."
+        return jsonify({"error": user_facing_error}), 500
 
 
 if __name__ == '__main__':
-    # ... (app.run remains the same) ...
+    # Increase the timeout just in case the AI call takes a moment
     app.run(debug=True, port=5000, threaded=True)
