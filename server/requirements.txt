@@ -3,5 +3,5 @@ flask-cors
 python-dotenv
 google-genai
 pypdf
-# We are skipping advanced vector store setup (FAISS, etc.) for time.
-# We'll stick to simple text extraction and prompt engineering.
+PyMuPDF
+Pillow
