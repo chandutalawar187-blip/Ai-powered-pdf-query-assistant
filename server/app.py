@@ -1,4 +1,4 @@
-# server/app.py (FINAL COMPLETE BACKEND CODE WITH CONVERSATIONAL HISTORY)
+# server/app.py (FINAL COMPLETE BACKEND CODE)
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -8,10 +8,10 @@ import pypdf
 from google import genai
 from google.genai.errors import APIError
 import fitz  # PyMuPDF for image extraction
-import io
-from PIL import Image
-import base64
+import re  # For regular expressions to find question numbers
 import tempfile
+import traceback  # NEW: For detailed error logging
+import base64
 
 # --- INITIAL SETUP ---
 load_dotenv()
@@ -20,10 +20,10 @@ CORS(app)
 
 # Global state
 client = None
-uploaded_pdf_path = None
+notes_pdf_path = None  # Path to the Notes file (Primary source for image extraction)
+paper_pdf_path = None
 document_text_chunks = []
-document_pages = {}
-query_history = []  # <--- ACTIVE LEARNING: Global list to store conversation history
+query_history = []  # Active Learning: Stores the conversation history (Q/A)
 
 try:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -42,7 +42,14 @@ def extract_and_crop_image(pdf_path, page_number):
     Renders the entire page where a figure is cited and returns it as a Base64 PNG.
     This ensures the full figure is displayed, bypassing complex bounding box math.
     """
+    if not os.path.exists(pdf_path):
+        # Critical Debug Log if path is lost
+        print(f"CRITICAL IMAGE DEBUG: PDF path not found at {pdf_path}")
+        return None
+
+    doc = None
     try:
+        # Load the PDF into memory using PyMuPDF
         doc = fitz.open(pdf_path)
         # Page numbers in PyMuPDF are 0-indexed
         page = doc[page_number - 1]
@@ -51,78 +58,153 @@ def extract_and_crop_image(pdf_path, page_number):
         zoom_matrix = fitz.Matrix(2, 2)
         pix = page.get_pixmap(matrix=zoom_matrix)
 
+        # Get bytes in memory and encode
         img_bytes = pix.tobytes(output="png")
-
         base64_img = base64.b64encode(img_bytes).decode('utf-8')
 
         return f"data:image/png;base64,{base64_img}"
 
-    except Exception as e:
-        print(f"IMAGE EXTRACTION FAILED on page {page_number}: {e}")
-        return None
     finally:
         # Close the document explicitly
-        if 'doc' in locals() and not doc.is_closed:
+
             doc.close()
 
 
 # --- CORE PDF PROCESSING ---
 
-def extract_text_and_chunk(pdf_path):
-    """Extracts text and chunks, storing page number metadata."""
-    global document_text_chunks, document_pages, query_history
-    document_text_chunks.clear()
-    document_pages.clear()
-    query_history.clear()  # Clear history on new PDF upload
+def extract_text_and_chunk(pdf_path, is_notes_file=True):
+    """Extracts text and chunks, labeling them by source type (Notes/Paper)."""
+
+    global document_text_chunks, query_history
+
+    source_label = "[NOTES]" if is_notes_file else "[PAPER]"
+    new_chunks = []
 
     try:
         reader = pypdf.PdfReader(pdf_path)
         for i, page in enumerate(reader.pages):
             text = page.extract_text()
             page_number = i + 1
-            document_pages[page_number] = text
 
             chunk_size = 1000
             for j in range(0, len(text), chunk_size):
                 chunk = text[j:j + chunk_size]
-                document_text_chunks.append(f"[Page {page_number}] {chunk}")
-        return True
+                # Label the chunk with its source: [NOTES] or [PAPER]
+                new_chunks.append(f"{source_label} [Page {page_number}] {chunk}")
+
+        # Clear existing chunks if uploading the primary source (Notes)
+        if is_notes_file:
+            document_text_chunks.clear()
+            query_history.clear()  # Clear history on new Notes upload
+
+        # Add new chunks to the global context
+        document_text_chunks.extend(new_chunks)
+        return True, len(new_chunks)
     except Exception as e:
         print(f"Error during PDF processing: {e}")
-        return False
+        return False, 0
+
+
+# --- QUESTION PAPER HELPER ---
+
+def get_question_text_from_paper(question_number):
+    """
+    Attempts to find the text for a given question number (e.g., 'Q1') in the Question Paper PDF.
+    """
+    if not paper_pdf_path:
+        return None
+
+    try:
+        # 1. Parse the desired question number (e.g., Q1 -> 1)
+        num = re.search(r'\d+', question_number).group()
+
+        # 2. Get all text from the Question Paper (not just chunks)
+        paper_text = ""
+        reader = pypdf.PdfReader(paper_pdf_path)
+        for page in reader.pages:
+            paper_text += page.extract_text() + "\n"
+
+        # 3. Use regex to find the question text following the number
+        # Pattern looks for: (Q or Question + Num + Punctuation) followed by (Question Text)
+        pattern = re.compile(r'(?:Q|Question)?\s*' + re.escape(
+            num) + r'[\.\)\s]+(.*?)(?=\s*(?:Q|Question)?\s*\d+[\.\)\s]+|option\s+[a-z]|\Z)', re.DOTALL | re.IGNORECASE)
+        match = pattern.search(paper_text)
+
+        if match:
+            q_text = match.group(1).strip()
+            # Final cleaning: remove any trailing option letters or short punctuation
+            q_text = re.sub(r'\s+[a-z][\.\)]?\s*$', '', q_text, flags=re.IGNORECASE).strip()
+
+            if q_text and len(q_text) > 5:
+                return q_text
+
+        return None
+
+    except Exception as e:
+        print(f"ERROR reading question paper: {e}")
+        return None
 
 
 # --- API ENDPOINTS ---
 
-@app.route('/upload', methods=['POST'])
-def upload_pdf():
-    """Handles file upload, saves it for image extraction, and processes text."""
-    global uploaded_pdf_path
+@app.route('/upload-notes', methods=['POST'])
+def upload_notes_pdf():
+    """Endpoint for uploading the primary source (Notes)."""
+    global notes_pdf_path
     if 'pdf' not in request.files:
         return jsonify({"error": "No file part"}), 400
-
     pdf_file = request.files['pdf']
 
-    # Save the file to a known temporary location for PyMuPDF access later
+    # Save the file
     temp_dir = tempfile.gettempdir()
-    # Use a unique name to avoid conflicts if the same file is uploaded multiple times
-    uploaded_pdf_path = os.path.join(temp_dir, f"uploaded_{os.getpid()}_{pdf_file.filename}")
+    current_notes_path = os.path.join(temp_dir, f"notes_{os.getpid()}_{pdf_file.filename}")
+    notes_pdf_path = current_notes_path
 
-    pdf_file.save(uploaded_pdf_path)
+    pdf_file.save(current_notes_path)
 
-    if extract_text_and_chunk(uploaded_pdf_path):
+    # Process and clear existing index before adding new notes
+    success, count = extract_text_and_chunk(current_notes_path, is_notes_file=True)
+
+    if success:
         return jsonify({
-            "message": f"PDF processed successfully. {len(document_text_chunks)} chunks indexed.",
-            "chunks_count": len(document_text_chunks)
+            "message": f"Notes processed successfully. {count} chunks indexed.",
+            "chunks_count": count
         })
     else:
-        return jsonify({"error": "Failed to process PDF."}), 500
+        return jsonify({"error": "Failed to process Notes PDF."}), 500
+
+
+@app.route('/upload-paper', methods=['POST'])
+def upload_paper_pdf():
+    """Endpoint for uploading the secondary source (Question Paper)."""
+    global paper_pdf_path
+    if 'pdf' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    pdf_file = request.files['pdf']
+
+    # Save the file
+    temp_dir = tempfile.gettempdir()
+    current_paper_path = os.path.join(temp_dir, f"paper_{os.getpid()}_{pdf_file.filename}")
+    paper_pdf_path = current_paper_path
+
+    pdf_file.save(current_paper_path)
+
+    # Process and add to global index. Note: is_notes_file=False
+    success, count = extract_text_and_chunk(current_paper_path, is_notes_file=False)
+
+    if success:
+        return jsonify({
+            "message": f"Question Paper processed successfully. {count} chunks indexed.",
+            "chunks_count": count
+        })
+    else:
+        return jsonify({"error": "Failed to process Question Paper PDF."}), 500
 
 
 @app.route('/query', methods=['POST'])
 def handle_query():
     """Dynamically handles Full Text, Verbatim QA, or COMPARISON extraction."""
-    global query_history  # Access global history list
+    global query_history, notes_pdf_path
 
     if not client:
         return jsonify({"error": "AI client is not initialized. Check API Key."}), 500
@@ -131,9 +213,25 @@ def handle_query():
     question = data.get('question', '').strip()
 
     if not document_text_chunks:
-        return jsonify({"error": "Please upload a PDF first."}), 400
+        return jsonify({"error": "Please upload at least one PDF first."}), 400
 
     lower_q = question.lower()
+
+    # --- STEP 1: CHECK FOR QUESTION NUMBER COMMAND (QUERY REWRITE) ---
+
+    # Look for patterns like 'Q1', 'Question 5', 'question number one'
+    q_num_match = re.search(r'(q\s*\d+|\s*question\s*\d+|\s*#\s*\d+)', lower_q)
+
+    if q_num_match and paper_pdf_path:
+        q_num_str = q_num_match.group().strip()
+        extracted_q_text = get_question_text_from_paper(q_num_str)
+
+        if extracted_q_text:
+            # REWRITE the user's query to use the extracted question text
+            original_q = question
+            question = extracted_q_text
+            lower_q = question.lower()
+            print(f"QUERY REWRITE: Original: '{original_q}' -> New: '{question}'")
 
     # --- PREPARE HISTORY CONTEXT ---
     history_context = "\n".join(query_history[-5:])  # Use last 5 interactions for context
@@ -148,7 +246,7 @@ def handle_query():
         full_text = "\n\n".join(document_text_chunks)
         return jsonify({
             "answer": full_text,
-            "sources": "Complete content extracted from ALL pages.",
+            "sources": f"Complete content extracted from ALL uploaded files ({len(document_text_chunks)} chunks).",
             "mode": "FULL_TEXT"
         })
 
@@ -212,7 +310,6 @@ def handle_query():
         cleaned_query_parts = lower_q.split()
         final_keywords = []
         for word in cleaned_query_parts:
-            # Check if the word is NOT a fluff word
             if word not in fluff_words and len(word) > 2:
                 final_keywords.append(word)
 
@@ -233,9 +330,9 @@ def handle_query():
             "Use the CONTEXT and the optional CONVERSATION HISTORY below to fully answer the user's question, especially if it involves a list, explanation, or a reference to a diagram.\n"
             "RULES:\n"
             "1. **MUST BE VERBATIM:** The entire output MUST be copied EXACTLY from the CONTEXT. Do not reword or add any summary/commentary.\n"
-            "2. **OUTPUT FORMAT:** The response MUST include all relevant category names and their definitions/explanations as found in the text.\n"
+            "2. **OUTPUT FORMAT:** The response MUST be a VERBATIM, fully-quoted response. Return all sentences/paragraphs necessary to provide the full explanation.\n"
             "3. **CITATION:** The entire response MUST be the exact quote(s) followed by the citation [Page X]. If the answer spans multiple chunks/pages, include all relevant citations.\n"
-            "4. **IMAGE HINT (CRITICAL):** If the answer explicitly references a figure or if the question asks for a 'diagram,' your output must ALSO include the reference [FIG:Page X] at the end, using the page number where the diagram/figure is found in the context. If multiple pages are relevant, use the page number where the main diagram is located.\n"
+            "4. **IMAGE HINT (CRITICAL):** If the answer explicitly references a figure or if the question asks for a 'diagram,' your output must ALSO include the reference [FIG:Page X] at the end, using the page number where the diagram/figure is found in the context.\n"
             "5. **FAILURE:** If the answer is not in the context, reply with the exact phrase: 'The required information was not found in the uploaded document.'"
         )
         # Use standard prompt
@@ -257,13 +354,14 @@ def handle_query():
         query_history.append(f"A: {answer_text[:50]}...")  # Store short version of answer
 
         # --- IMAGE DETECTION AND EXTRACTION (Only for VERBATIM mode) ---
-        if mode == "VERBATIM" and "[FIG:" in answer_text and uploaded_pdf_path:
+        if mode == "VERBATIM" and "[FIG:" in answer_text and notes_pdf_path:
             try:
                 page_match = answer_text.split('[FIG:Page ')[1].split(']')[0]
                 # Ensure the extracted page number is an integer
                 page_num = int(''.join(filter(str.isdigit, page_match)))
 
-                image_data = extract_and_crop_image(uploaded_pdf_path, page_num)
+                # Assume image is in NOTES PDF as the primary source for figures
+                image_data = extract_and_crop_image(notes_pdf_path, page_num)
             except Exception as e:
                 print(f"IMAGE PROCESSING/EXTRACTION ERROR: {e}")
 
@@ -284,6 +382,7 @@ def handle_query():
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    # CRITICAL: Bind to 0.0.0.0 and set debug to False for public servers
-    app.run(debug=False, host="0.0.0.0", port=port, threaded=True)
+    # --- LOCAL DEVELOPMENT BINDING ---
+    # Running locally for testing purposes.
+    # We use 127.0.0.1 (localhost) and enable debug mode.
+    app.run(debug=True, host="127.0.0.1", port=5000, threaded=True)
