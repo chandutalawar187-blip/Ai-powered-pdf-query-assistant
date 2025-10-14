@@ -1,49 +1,168 @@
-import React, { useState } from 'react';
-import './App.css'; 
+// client/src/App.js (FINAL COMPLETE FRONTEND CODE WITH DUAL UPLOAD, DARK MODE & PAGE NAVIGATION)
+import React, { useState, useRef } from 'react';
+import './App.css';
+import PrivacyPolicy from './PrivacyPolicy';
 
-// NOTE: Ensure your Flask server is running on this port
-const API_URL = 'https://ai-powered-pdf-query-assistant.onrender.com';
 
-// --- UTILITY FUNCTION ---
-const markdownTableToHtml = (markdown) => {
-    // This is a minimal parser for the specific Markdown table structure output by Gemini.
+// NOTE: This must be the live Render URL you deployed!
+const API_URL = 'http://127.0.0.1:5000';
+
+// --- TABLE RENDERING UTILITY (MOVED OUTSIDE APP) ---
+
+// Function to convert the Markdown table (received from Python) into basic HTML table tags
+// Now accepts the current theme to apply appropriate contrast styling
+const markdownTableToHtml = (markdown, isDark) => {
+    // Styling constants for the HTML table
+    const tableStyles = {
+        tableBg: isDark ? '#2d3748' : '#fff',
+        thBg: isDark ? '#4a5568' : '#f2f2f2',
+        thText: isDark ? '#e2e8f0' : '#333',
+        tdText: isDark ? '#a0aec0' : '#333',
+        tdBorder: isDark ? '#4a5568' : '#eee',
+    };
+
+    // This function aggressively looks for Markdown table structures and converts them to HTML
     const lines = markdown.trim().split('\n').filter(line => line.includes('|'));
 
-    // Check if enough lines exist for a table (Header, Separator, at least one Body row)
-    if (lines.length < 3) return markdown; 
+    if (lines.length < 2) return markdown;
 
-    // The first line is the header (<thead>)
-    // We remove the starting and ending '|', then map each column header
-    const headerLine = lines[0].split('|').slice(1, -1).map(h => `<th>${h.trim()}</th>`).join('');
+    // Find the header (first line) and skip the separator (second line: |---|)
+    const headerLine = lines[0].split('|').map(h => `<th style="background-color: ${tableStyles.thBg}; color: ${tableStyles.thText}; padding: 10px; border: 1px solid ${tableStyles.tdBorder}; text-align: left;">${h.trim().replace('Parameter', 'Parameter (Page(s))')}</th>`).join('');
     const header = `<thead><tr>${headerLine}</tr></thead>`;
 
-    // Skip the second line (the separator: |---|---|)
+    // Remaining lines are the body
     const bodyLines = lines.slice(2);
 
-    // Remaining lines are the body (<tbody>)
-    const body = bodyLines.map(line => {
-        // Remove starting/ending '|' and map to <td> tags
-        const rowCells = line.split('|').slice(1, -1).map(cell => `<td>${cell.trim()}</td>`).join('');
-        return `<tr>${rowCells}</tr>`;
+    const body = bodyLines.map((line, index) => {
+        // Set row background based on alternating rows
+        const rowBg = (index % 2 === 0) ? tableStyles.tableBg : (isDark ? '#1a202c' : '#fafafa');
+
+        const rowCells = line.split('|').map(cell => `<td style="padding: 8px; border: 1px solid ${tableStyles.tdBorder}; color: ${tableStyles.tdText};">${cell.trim()}</td>`).join('');
+
+        return `<tr style="background-color: ${rowBg};">${rowCells}</tr>`;
     }).join('');
 
-    // Class 'comparison-table' must be defined in App.css for proper styling
-    return `<table class="comparison-table" style="width:100%; border-collapse: collapse;">${header}<tbody>${body}</tbody></table>`;
+    // Apply basic inline table styling for presentation
+    return `<table class="comparison-table" style="width:100%; border-collapse: collapse; margin-top: 10px; color: ${tableStyles.tdText};">${header}<tbody>${body}</tbody></table>`;
 };
 
-// Basic inline styles for a clean look
-const sectionStyle = { border: '1px solid #ddd', padding: '30px', marginBottom: '30px', borderRadius: '10px', boxShadow: '0 4px 8px rgba(0,0,0,0.05)' };
-const titleStyle = { color: '#3498db', borderBottom: '1px solid #eee', paddingBottom: '10px', marginBottom: '20px' };
-const inputStyle = { width: '100%', padding: '12px', marginBottom: '15px', boxSizing: 'border-box', border: '1px solid #ccc', borderRadius: '5px' };
-const buttonStyle = { padding: '10px 20px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' };
-const queryButtonStyle = { padding: '12px 25px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontWeight: 'bold' };
-const answerBoxStyle = { minHeight: '150px', padding: '15px', backgroundColor: '#ecf0f1', borderRadius: '5px' };
+
+// --- Global Style Definitions (FIXED SCOPE) ---
+
+const baseInputStyle = {
+    width: '100%',
+    padding: '12px 18px',
+    marginBottom: '15px',
+    boxSizing: 'border-box',
+    border: 'none',
+    borderRadius: '8px',
+};
+const baseButtonStyle = {
+    padding: '10px 20px',
+    border: 'none',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    fontWeight: '600',
+    transition: 'background-color 0.3s'
+};
+const baseQueryButtonStyle = {
+    padding: '12px 25px',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    fontWeight: 'bold',
+    transition: 'background-color 0.3s',
+    border: 'none',
+    width: '100%'
+};
+
+// --- FOOTER COMPONENT (Instagram SVG) ---
+const InstagramIcon = ({ color }) => (
+    <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke={color}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+    >
+        <rect width="20" height="20" x="2" y="2" rx="5" ry="5" />
+        <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z" />
+        <line x1="17.5" y1="6.5" x2="17.51" y2="6.5" />
+    </svg>
+);
+
+// --- Privacy Policy ---
+
+
+
+// --- ABOUT PAGE COMPONENT (Using React State for Navigation) ---
+const AboutPage = ({ colors, toggleMode }) => (
+    <div style={{
+        padding: '40px',
+        maxWidth: '800px',
+        margin: '50px auto',
+        backgroundColor: colors.bgSecondary,
+        borderRadius: '12px',
+        boxShadow: '0 8px 30px rgba(0, 0, 0, 0.15)',
+        color: colors.textPrimary,
+        border: `1px solid ${colors.borderColor}`
+    }}>
+        <h2 style={{ color: colors.accentColor, borderBottom: `2px solid ${colors.accentColor}`, paddingBottom: '10px', marginBottom: '20px' }}>
+            About the AI Verbatim Query Assistant
+        </h2>
+
+        <p style={{ fontSize: '1.1em', lineHeight: '1.6', marginBottom: '25px', textAlign: 'justify' }}>
+            Hi, I'm **Chandrashekar**, and I'm currently pursuing my B.E. in CSE Engineering at GM Institute of Technology, Davangere. I developed this website as a project for the hackathon.
+        </p>
+
+        <p style={{ fontSize: '1.1em', lineHeight: '1.6', marginBottom: '25px', fontWeight: 'bold', color: colors.textPrimary, textAlign: 'justify' }}>
+            This website is a direct solution for students who don't want their reading mood ruined by endless scrolling when they need a perfect, precise answer.
+        </p>
+
+        <ul style={{ listStyleType: 'none', paddingLeft: '0', fontSize: '1em', lineHeight: '1.8' }}>
+            <li style={{ marginBottom: '10px' }}>✅ **Verbatim Extraction:** Gets the **exact line** from your notes, no summarizing.</li>
+            <li style={{ marginBottom: '10px' }}>✅ **Dual Context RAG:** Upload both your **Notes** and **Question Paper** for smarter searches.</li>
+            <li style={{ marginBottom: '10px' }}>✅ **Image Referencing:** Displays **relevant diagrams** when your answer cites a figure.</li>
+            <li style={{ marginBottom: '10px' }}>✅ **Comparison Tables:** Automatically structures differentiation queries into clean tables.</li>
+        </ul>
+
+        <p style={{ marginTop: '30px', textAlign: 'center', fontSize: '1.2em', fontWeight: 'bold' }}>
+            So go ahead and upload your notes. No more yapping—get your answer! Good luck with your studies.
+        </p>
+
+        <button
+            onClick={toggleMode}
+            style={{
+                ...baseButtonStyle,
+                display: 'block',
+                margin: '30px auto 0 auto',
+                backgroundColor: colors.accentColor,
+                color: 'white',
+                padding: '10px 30px'
+            }}
+        >
+            Go Back to the Tool
+        </button>
+    </div>
+);
 
 
 function App() {
-  // State for file management
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [uploadMessage, setUploadMessage] = useState('');
+  // Global State for UI
+  const [theme, setTheme] = useState('light');
+  const [pageMode, setPageMode] = useState('tool');// NEW STATE: 'tool' or 'about'
+
+  // DUAL FILE UPLOAD STATE
+  const [notesFile, setNotesFile] = useState(null);
+  const [paperFile, setPaperFile] = useState(null);
+
+  // DUAL MESSAGE STATE
+  const [notesMessage, setNotesMessage] = useState('');
+  const [paperMessage, setPaperMessage] = useState('');
+
   const [isProcessing, setIsProcessing] = useState(false);
 
   // State for querying and results
@@ -52,55 +171,115 @@ function App() {
   const [sources, setSources] = useState('');
   const [mode, setMode] = useState('');
   const [queryLoading, setQueryLoading] = useState(false);
-  const [fetchedImage, setFetchedImage] = useState(null); 
+  const [fetchedImage, setFetchedImage] = useState(null);
 
-  // --- PDF UPLOAD HANDLER (/upload) ---
-  const handleUpload = async () => {
-    if (!selectedFile) {
-      setUploadMessage('Please select a PDF file first.');
-      return;
-    }
+  // --- REFS for File Inputs ---
+  const notesFileInputRef = useRef(null);
+  const paperFileInputRef = useRef(null);
+
+  // --- Theme Toggle Logic ---
+  const toggleTheme = () => {
+    setTheme(prevTheme => (prevTheme === 'light' ? 'dark' : 'light'));
+  };
+
+  // --- Dynamic Style Definitions ---
+
+  const isDark = theme === 'dark';
+
+  const colors = {
+      bgPrimary: isDark ? '#1a202c' : '#f4f7f6',
+      bgSecondary: isDark ? '#2d3748' : '#fff',
+      textPrimary: isDark ? '#e2e8f0' : '#2c3e50',
+      textSecondary: isDark ? '#a0aec0' : '#666',
+      borderColor: isDark ? '#4a5568' : '#ddd',
+      accentColor: isDark ? '#63b3ed' : '#1a73e8',
+      buttonBg: isDark ? '#4299e1' : '#1a73e8',
+      buttonHover: isDark ? '#3182ce' : '#155bb5',
+      successBg: isDark ? '#2f855a' : '#00c853',
+      answerBg: isDark ? '#243447' : '#f8f9fa'
+  };
+
+  const globalStyle = {
+      fontFamily: 'Inter, sans-serif',
+      margin: '0 auto',
+      backgroundColor: colors.bgPrimary,
+      minHeight: '100vh',
+      color: colors.textPrimary,
+      padding: '20px'
+  };
+
+  const sectionStyle = {
+      border: `1px solid ${colors.borderColor}`,
+      padding: '30px',
+      marginBottom: '30px',
+      borderRadius: '12px',
+      boxShadow: '0 4px 15px rgba(0,0,0,0.2)',
+      backgroundColor: colors.bgSecondary,
+      transition: 'all 0.3s'
+  };
+
+  const titleStyle = {
+      color: colors.accentColor,
+      borderBottom: `1px solid ${colors.borderColor}`,
+      paddingBottom: '10px',
+      marginBottom: '20px'
+  };
+
+  // Adjusted Answer Box for better aesthetics (uses dynamic border/background)
+  const answerBoxStyle = {
+      minHeight: '150px',
+      padding: '15px',
+      backgroundColor: colors.answerBg,
+      borderRadius: '8px',
+      border: `1px solid ${colors.borderColor}`
+  };
+
+  // --- DUAL PDF UPLOAD HANDLERS ---
+
+  const handleUpload = async (file, type) => {
+    if (!file) return;
+
+    const isNotes = type === 'notes';
+    const setFileMessage = isNotes ? setNotesMessage : setPaperMessage;
+    const uploadEndpoint = isNotes ? `${API_URL}/upload-notes` : `${API_URL}/upload-paper`;
 
     setIsProcessing(true);
-    setUploadMessage('Processing PDF and chunking text...');
+    setFileMessage(`Processing ${isNotes ? 'Notes' : 'Paper'}...`);
 
     const formData = new FormData();
-    formData.append('pdf', selectedFile);
+    formData.append('pdf', file);
 
     try {
-      const response = await fetch(`${API_URL}/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-
+      const response = await fetch(uploadEndpoint, { method: 'POST', body: formData });
       const data = await response.json();
 
       if (response.ok) {
-        setUploadMessage(`Success! PDF processed. ${data.chunks_count} text chunks indexed.`);
-        setAnswer('');
-        setSources('');
-        setMode('');
-        setFetchedImage(null);
+        setFileMessage(`Success! ${isNotes ? 'Notes' : 'Paper'} processed. ${data.chunks_count} chunks indexed.`);
+        // Only clear question/answer if uploading Notes (the primary source for RAG)
+        if (isNotes) {
+            setAnswer(''); setSources(''); setMode(''); setFetchedImage(null);
+        }
       } else {
-        setUploadMessage(`Upload Error: ${data.error}`);
+        setFileMessage(`Upload Error: ${data.error}`);
       }
     } catch (error) {
-      setUploadMessage(`Network Error: Could not connect to backend server. Is Flask server running on ${API_URL}?`);
+      setFileMessage(`Network Error: Could not connect to backend server.`);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // --- QUERY HANDLER (/query) ---
+  const handleNotesUpload = () => handleUpload(notesFile, 'notes');
+  const handlePaperUpload = () => handleUpload(paperFile, 'paper');
+
+
   const handleQuery = async (e) => {
     e.preventDefault();
-    if (queryLoading || isProcessing || !uploadMessage.startsWith('Success')) return;
+    // Query is only allowed if at least the Notes file is successfully uploaded
+    const canQuery = notesMessage.startsWith('Success');
+    if (queryLoading || isProcessing || !canQuery) return;
 
-    setQueryLoading(true);
-    setAnswer('');
-    setSources('');
-    setMode('');
-    setFetchedImage(null);
+    setQueryLoading(true); setAnswer(''); setSources(''); setMode(''); setFetchedImage(null);
 
     try {
       const response = await fetch(`${API_URL}/query`, {
@@ -114,18 +293,13 @@ function App() {
       if (response.ok) {
         setAnswer(data.answer);
         setSources(data.sources || "Direct API response.");
-        // Capture mode and image data from the Python backend
-        setMode(data.mode || "VERBATIM"); 
+        setMode(data.mode || "VERBATIM");
         setFetchedImage(data.image_data || null);
       } else {
-        setAnswer(`Query Error: ${data.error}`);
-        setSources('');
-        setMode('ERROR');
+        setAnswer(`Query Error: ${data.error}`); setSources(''); setMode('ERROR');
       }
     } catch (error) {
-      setAnswer('Network Error: Could not connect to backend server.');
-      setSources('');
-      setMode('ERROR');
+      setAnswer('Network Error: Could not connect to backend server.'); setSources(''); setMode('ERROR');
     } finally {
       setQueryLoading(false);
     }
@@ -134,33 +308,32 @@ function App() {
   // --- UI RENDERING LOGIC ---
   const renderAnswerContent = () => {
     if (queryLoading) {
-      return <p style={{ color: '#007bff' }}>Searching for the exact phrase...</p>;
+      return <p style={{ color: colors.accentColor }}>Searching for the exact phrase...</p>;
     }
     if (!answer) {
-      return <p style={{ color: '#888' }}>Ask a question to begin.</p>;
+      return <p style={{ color: colors.textSecondary }}>Ask a question to begin.</p>;
     }
 
-    // Check for the Full Text Extraction mode
     if (mode === 'FULL_TEXT') {
       return (
-        <pre style={{ whiteSpace: 'pre-wrap', maxHeight: '500px', overflowY: 'scroll', border: '1px solid #ccc', padding: '15px' }}>
+        <pre style={{ whiteSpace: 'pre-wrap', maxHeight: '500px', overflowY: 'scroll', border: `1px solid ${colors.borderColor}`, padding: '15px', backgroundColor: colors.answerBg, color: colors.textPrimary }}>
           {answer}
         </pre>
       );
     }
 
-    // Check for the Comparison (Markdown) mode and render HTML table
     if (mode === 'COMPARISON') {
-        const tableHtml = markdownTableToHtml(answer);
-        
+        // Pass theme status to the parsing utility for correct color injection
+        const tableHtml = markdownTableToHtml(answer, isDark);
+
         return (
-            <div style={{ padding: '15px', border: '1px solid #3498db', backgroundColor: '#f0f8ff', borderRadius: '5px' }}>
-                <h4 style={{marginTop: '0', color: '#2c3e50'}}>Comparison Table</h4>
-                
-                {/* Use dangerouslySetInnerHTML to render the HTML table structure */}
-                <div 
-                    dangerouslySetInnerHTML={{ __html: tableHtml }} 
-                    style={{ overflowX: 'auto' }}
+            <div style={{ padding: '15px', border: `1px solid ${colors.accentColor}`, backgroundColor: colors.answerBg, borderRadius: '8px' }}>
+                <h4 style={{marginTop: '0', color: colors.accentColor}}>Comparison Table</h4>
+
+                {/* CRITICAL: Use dangerouslySetInnerHTML to render the HTML table structure */}
+                <div
+                    dangerouslySetInnerHTML={{ __html: tableHtml }}
+                    style={{ overflowX: 'auto', color: colors.textPrimary }}
                 />
             </div>
         );
@@ -170,101 +343,242 @@ function App() {
       return <p style={{ color: 'red', fontWeight: 'bold' }}>{answer}</p>;
     }
 
-    // Default: Verbatim extraction
     return (
-      <p style={{ whiteSpace: 'pre-wrap', fontWeight: '500' }}>{answer}</p>
+      // APPLIED FIX: Added textAlign: 'justify' and font size/line height for formal reading look
+      <p style={{
+          whiteSpace: 'pre-wrap',
+          fontWeight: '500',
+          color: colors.textPrimary,
+          textAlign: 'justify', // <--- JUSTIFY ALIGNMENT APPLIED HERE
+          fontSize: '1.05em',   // Slightly larger text
+          lineHeight: '1.6'     // Increased line height for readability
+      }}>
+          {answer}
+      </p>
     );
   };
 
 
-  return (
-    <div className="App" style={{ padding: '40px', fontFamily: 'Inter, sans-serif', maxWidth: '1100px', margin: '0 auto' }}>
-      <h1 style={{ textAlign: 'center', color: '#2c3e50' }}>AI-Powered Verbatim PDF Query Assistant</h1>
-
-      {/* 1. Upload Document Section */}
-      <div style={sectionStyle}>
-        <h2 style={titleStyle}>1. Upload Document</h2>
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <input
-            type="file"
-            accept="application/pdf"
-            onChange={(e) => setSelectedFile(e.target.files[0])}
-            disabled={isProcessing}
-          />
+ return (
+  <div className="App" style={globalStyle}>
+    {pageMode === 'about' ? (
+      <AboutPage colors={colors} toggleMode={() => setPageMode('tool')} />
+    ) : pageMode === 'privacy' ? (
+      <PrivacyPolicy colors={colors} toggleMode={() => setPageMode('tool')} />
+    ) : (
+      <>
+        {/* Header and Theme Toggle */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <h1 style={{ color: colors.textPrimary, fontSize: '2em' }}>
+            AI Verbatim Query Assistant
+          </h1>
           <button
-            onClick={handleUpload}
-            disabled={isProcessing || !selectedFile}
-            style={buttonStyle}
+            onClick={toggleTheme}
+            style={{
+              ...baseButtonStyle,
+              padding: '8px 15px',
+              backgroundColor: colors.buttonBg,
+              color: 'white',
+              marginLeft: '20px'
+            }}
           >
-            {isProcessing ? 'Processing...' : 'Upload & Index'}
+            {isDark ? '☀️ Light Mode' : '🌙 Dark Mode'}
           </button>
         </div>
-        <p style={{ marginTop: '10px', color: uploadMessage.startsWith('Success') ? 'green' : (uploadMessage.startsWith('Network') || uploadMessage.startsWith('Upload Error') ? 'red' : 'gray') }}>
-          {uploadMessage}
-        </p>
-      </div>
 
-      {/* 2. Ask a Question Section */}
-      <div style={sectionStyle}>
-        <h2 style={titleStyle}>2. Ask a Question</h2>
-        <form onSubmit={handleQuery}>
-          <input
-            type="text"
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="e.g., Compare TCP and UDP OR What is Figure 4.7?"
-            required
-            style={inputStyle}
-            disabled={isProcessing || !uploadMessage.startsWith('Success')}
-          />
-          <button
-            type="submit"
-            disabled={queryLoading || isProcessing || !uploadMessage.startsWith('Success')}
-            style={queryButtonStyle}
-          >
-            {queryLoading ? 'Thinking...' : 'Get Answer'}
-          </button>
-        </form>
+        {/* ------------------------ */}
+        {/* 1. DUAL UPLOAD SECTION */}
+        {/* ------------------------ */}
+        <div style={sectionStyle}>
+          <h2 style={titleStyle}>1. Upload Documents</h2>
 
-        {/* --- ANSWER AND IMAGE DISPLAY --- */}
-        <div style={{ display: 'flex', gap: '20px', marginTop: '30px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            
-            {/* Text Answer Section (Main Content) */}
-            <div style={{ flex: fetchedImage ? 2 : 1, minWidth: '400px' }}> 
-                <h3 style={{ color: '#34495e', borderBottom: '1px dashed #ddd', paddingBottom: '5px' }}>
-                    AI Answer: <span style={{fontSize: '0.8em', color: '#999'}}>
-                        ({mode === 'VERBATIM' ? 'Verbatim Extraction' : mode === 'FULL_TEXT' ? 'Full Text Output' : mode})
-                    </span>
-                </h3>
-                <div style={answerBoxStyle}>
-                    {renderAnswerContent()}
-                </div>
+          {/* Notes PDF Upload */}
+          <div style={{ border: `1px solid ${colors.borderColor}`, padding: '15px', borderRadius: '8px', marginBottom: '15px', backgroundColor: colors.answerBg }}>
+            <h4 style={{marginTop: '0', color: colors.textPrimary}}>A. Notes/Reference PDF (Source of Answers)</h4>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center', flexGrow: 1, minWidth: '200px' }}>
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  ref={notesFileInputRef}
+                  onChange={(e) => setNotesFile(e.target.files[0])}
+                  disabled={isProcessing}
+                  style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', zIndex: 10, cursor: 'pointer' }}
+                />
+                <button
+                  onClick={(e) => { e.preventDefault(); notesFileInputRef.current.click(); }}
+                  disabled={isProcessing}
+                  style={{ ...baseButtonStyle, backgroundColor: colors.bgSecondary, color: colors.textPrimary, border: `1px solid ${colors.borderColor}`, padding: '8px 15px', marginRight: '-1px' }}
+                >
+                  Choose File
+                </button>
+                <span
+                  style={{ padding: '8px 15px', border: `1px solid ${colors.borderColor}`, borderRadius: '0 8px 8px 0', backgroundColor: colors.bgSecondary, color: colors.textSecondary, flexGrow: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}
+                >
+                  {notesFile ? notesFile.name : 'No file chosen'}
+                </span>
+              </div>
+
+              <button
+                onClick={handleNotesUpload}
+                disabled={isProcessing || !notesFile}
+                style={{ ...baseButtonStyle, backgroundColor: colors.buttonBg, color: 'white' }}
+              >
+                {isProcessing ? 'Processing...' : 'Upload Notes'}
+              </button>
+            </div>
+            <p style={{ marginTop: '10px', color: notesMessage.startsWith('Success') ? colors.successBg : (notesMessage.startsWith('Network') || notesMessage.startsWith('Upload Error') ? 'red' : colors.textSecondary) }}>
+              {notesMessage}
+            </p>
+          </div>
+
+          {/* Question Paper PDF Upload */}
+          <div style={{ border: `1px solid ${colors.borderColor}`, padding: '15px', borderRadius: '8px', backgroundColor: colors.answerBg }}>
+            <h4 style={{marginTop: '0', color: colors.textPrimary}}>B. Question Paper PDF (Optional - For Context)</h4>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center', flexGrow: 1, minWidth: '200px' }}>
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  ref={paperFileInputRef}
+                  onChange={(e) => setPaperFile(e.target.files[0])}
+                  disabled={isProcessing}
+                  style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', zIndex: 10, cursor: 'pointer' }}
+                />
+                <button
+                  onClick={(e) => { e.preventDefault(); paperFileInputRef.current.click(); }}
+                  disabled={isProcessing}
+                  style={{ ...baseButtonStyle, backgroundColor: colors.bgSecondary, color: colors.textPrimary, border: `1px solid ${colors.borderColor}`, padding: '8px 15px', marginRight: '-1px' }}
+                >
+                  Choose File
+                </button>
+                <span
+                  style={{ padding: '8px 15px', border: `1px solid ${colors.borderColor}`, borderRadius: '0 8px 8px 0', backgroundColor: colors.bgSecondary, color: colors.textSecondary, flexGrow: 1, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}
+                >
+                  {paperFile ? paperFile.name : 'No file chosen'}
+                </span>
+              </div>
+
+              <button
+                onClick={handlePaperUpload}
+                disabled={isProcessing || !paperFile}
+                style={{ ...baseButtonStyle, backgroundColor: colors.buttonBg, color: 'white' }}
+              >
+                {isProcessing ? 'Processing...' : 'Upload Paper'}
+              </button>
+            </div>
+            <p style={{ marginTop: '10px', color: paperMessage.startsWith('Success') ? colors.successBg : (paperMessage.startsWith('Network') || paperMessage.startsWith('Upload Error') ? 'red' : colors.textSecondary) }}>
+              {paperMessage}
+            </p>
+          </div>
+        </div>
+
+        {/* --------------------------- */}
+        {/* 2. ASK A QUESTION SECTION */}
+        {/* --------------------------- */}
+        <div style={sectionStyle}>
+          <h2 style={titleStyle}>2. Ask a Question</h2>
+          <form onSubmit={handleQuery}>
+            <input
+              type="text"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="e.g., What is the definition of Virtual Machine? OR Compare two hosts."
+              required
+              style={{...baseInputStyle, backgroundColor: colors.answerBg, color: colors.textPrimary}}
+              disabled={isProcessing || !notesMessage.startsWith('Success')}
+            />
+            <button
+              type="submit"
+              disabled={queryLoading || isProcessing || !notesMessage.startsWith('Success')}
+              style={{...baseQueryButtonStyle, backgroundColor: colors.successBg, color: 'white'}}
+            >
+              {queryLoading ? 'Thinking...' : 'Get Answer'}
+            </button>
+          </form>
+
+          {/* --- ANSWER AND IMAGE DISPLAY --- */}
+          <div style={{ display: 'flex', gap: '20px', marginTop: '30px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <div style={{ flex: fetchedImage ? 2 : 1, minWidth: fetchedImage ? '400px' : 'auto' }}>
+              <h3 style={{ color: colors.textPrimary, borderBottom: `1px dashed ${colors.borderColor}`, paddingBottom: '5px' }}>
+                AI Answer: <span style={{fontSize: '0.8em', color: colors.textSecondary}}>
+                  ({mode === 'VERBATIM' ? 'Verbatim Extraction' : mode === 'FULL_TEXT' ? 'Full Text Output' : mode})
+                </span>
+              </h3>
+              <div style={answerBoxStyle}>{renderAnswerContent()}</div>
             </div>
 
-            {/* Image Display Section */}
             {fetchedImage && (
-                <div style={{ flex: 1, minWidth: '300px', maxWidth: '350px', border: '2px solid #3498db', padding: '10px', backgroundColor: '#fff', borderRadius: '5px' }}>
-                    <h4 style={{ color: '#3498db', marginTop: '0' }}>Extracted Figure Reference</h4>
-                    <img 
-                        src={fetchedImage} 
-                        alt="Extracted figure reference" 
-                        style={{ maxWidth: '100%', height: 'auto', display: 'block' }} 
-                    />
-                    <p style={{ fontSize: '0.8em', color: '#666', marginTop: '10px' }}>
-                        *Cropped from the relevant page.
-                    </p>
-                </div>
+              <div style={{ flex: 1, minWidth: '300px', maxWidth: '350px', border: `2px solid ${colors.accentColor}`, padding: '15px', backgroundColor: colors.answerBg, borderRadius: '8px' }}>
+                <h4 style={{ color: colors.accentColor, marginTop: '0' }}>Extracted Figure Reference</h4>
+                <img src={fetchedImage} alt="Extracted figure reference" style={{ maxWidth: '100%', height: 'auto', display: 'block', borderRadius: '4px' }} />
+                <p style={{ fontSize: '0.8em', color: colors.textSecondary, marginTop: '10px' }}>*Cropped from the relevant page.</p>
+              </div>
             )}
+          </div>
+
+          {sources && (
+            <p style={{ fontSize: '0.8em', color: colors.textSecondary, marginTop: '10px' }}>
+              **Debug Sources:** {sources}
+            </p>
+          )}
         </div>
-        
-        {sources && (
-          <p style={{ fontSize: '0.8em', color: '#666', marginTop: '10px' }}>
-            **Debug Sources:** {sources}
+
+        {/* ------------------- */}
+        {/* FOOTER SECTION */}
+        {/* ------------------- */}
+        <div style={{
+          marginTop: '60px',
+          padding: '20px 0',
+          borderTop: `1px solid ${colors.borderColor}`,
+          textAlign: 'center',
+          color: colors.textSecondary
+        }}>
+          <div style={{ marginBottom: '15px' }}>
+            <a href="https://www.instagram.com/__chandu.talawar__/"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Instagram Link"
+              style={{ textDecoration: 'none' }}>
+              <InstagramIcon color={colors.accentColor} />
+            </a>
+          </div>
+
+          <div style={{ marginBottom: '10px', fontSize: '0.9em' }}>
+
+            <button onClick={() => setPageMode('about')} style={{ margin: '0 10px', color: colors.textSecondary, textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+              About
+            </button>
+
+            <a href="#" style={{ margin: '0 10px', color: colors.textSecondary, textDecoration: 'none' }}>Tool</a>
+            <button
+  onClick={() => setPageMode('privacy')}
+  style={{
+    margin: '0 10px',
+    color: colors.textSecondary,
+    textDecoration: 'none',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    padding: 0
+  }}
+>
+  Privacy Policy
+</button>
+
+          </div>
+
+          <p style={{ fontSize: '0.8em', color: colors.textSecondary }}>
+            &copy; 2025 AI Verbatim Query Assistant
           </p>
-        )}
-      </div>
-    </div>
-  );
+        </div>
+      </>
+    )}
+  </div>
+);
 }
 
 export default App;
+
