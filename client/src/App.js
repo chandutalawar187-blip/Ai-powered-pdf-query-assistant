@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import './App.css'; 
 
 // NOTE: Ensure your Flask server is running on this port
-const API_URL = 'http://localhost:5000';
+const API_URL = 'https://ai-powered-pdf-query-assistant.onrender.com';
 
 // --- UTILITY FUNCTION ---
 const markdownTableToHtml = (markdown) => {
