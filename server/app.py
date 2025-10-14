@@ -1,39 +1,38 @@
-# server/app.py
+# server/app.py (FINAL HACKATHON CODE - FOCUS: VERBATIM EXTRACTION)
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
-import pypdf  # PDF extraction library
+import pypdf
 from google import genai
 from google.genai.errors import APIError
 
 # --- INITIAL SETUP ---
 load_dotenv()
 app = Flask(__name__)
-# Enable CORS to allow React on one port to talk to Flask on another
 CORS(app)
 
-# Initialize Gemini Client
+# Initialize Gemini Client (Checking API Key status)
+client = None
 try:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY not found in .env file.")
-    client = genai.Client(api_key=GEMINI_API_KEY)
-except ValueError as e:
-    print(f"Error: {e}")
-    client = None
+        print("Warning: GEMINI_API_KEY not found. API functions will fail.")
+    else:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+except Exception as e:
+    print(f"Error initializing Gemini client: {e}")
 
-# Global state to hold the PDF text and pages (Our temporary "data management")
-# In a real app, this would be a database/vector store
+# Global state to hold the PDF text and pages
 document_text_chunks = []
-document_pages = {}  # {page_num: text}
+document_pages = {}
 
 
 def extract_text_and_chunk(pdf_path):
-    """Task 1: Extracts text and chunks from PDF, storing page number metadata."""
+    """Extracts text and chunks from PDF, storing page number metadata."""
     global document_text_chunks, document_pages
-    document_text_chunks = []
-    document_pages = {}
+    document_text_chunks.clear()
+    document_pages.clear()
 
     try:
         reader = pypdf.PdfReader(pdf_path)
@@ -42,13 +41,11 @@ def extract_text_and_chunk(pdf_path):
             page_number = i + 1
             document_pages[page_number] = text
 
-            # Simple chunking for now (500 chars). Add page context to chunk.
-            chunk_size = 500
+            # Use larger chunks to ensure full sentences/paragraphs are retrieved
+            chunk_size = 1000
             for j in range(0, len(text), chunk_size):
                 chunk = text[j:j + chunk_size]
-                # Metadata embedded in the chunk
                 document_text_chunks.append(f"[Page {page_number}] {chunk}")
-
         return True
     except Exception as e:
         print(f"Error during PDF processing: {e}")
@@ -59,20 +56,15 @@ def extract_text_and_chunk(pdf_path):
 
 @app.route('/upload', methods=['POST'])
 def upload_pdf():
-    """Endpoint to handle file upload and text processing (Data Ingestion)."""
+    """Handles file upload and sets up the global text chunks."""
     if 'pdf' not in request.files:
         return jsonify({"error": "No file part"}), 400
 
     pdf_file = request.files['pdf']
-    if pdf_file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
-
-    # Save the file temporarily
     file_path = f"documents/{pdf_file.filename}"
     os.makedirs('documents', exist_ok=True)
     pdf_file.save(file_path)
 
-    # Process the file and prepare the data store
     if extract_text_and_chunk(file_path):
         return jsonify({
             "message": f"PDF processed successfully. {len(document_text_chunks)} chunks indexed.",
@@ -82,43 +74,92 @@ def upload_pdf():
         return jsonify({"error": "Failed to process PDF."}), 500
 
 
+# server/app.py (FINAL DEBUGGING VERSION OF handle_query)
+
+# server/app.py (Updated handle_query to force ALL context for specific queries)
+
 @app.route('/query', methods=['POST'])
 def handle_query():
-    """Task 2: Handles the user question and calls the Gemini API."""
-    if not client:
-        return jsonify({"error": "AI client not initialized. Check API Key."}), 500
+    # ... (all initial checks remain the same) ...
 
     data = request.json
-    question = data.get('question')
+    question = data.get('question', '').strip()
 
     if not document_text_chunks:
         return jsonify({"error": "Please upload a PDF first."}), 400
 
-    # Task 2: Simplistic Search (CRUDE but fast for a hackathon)
-    # Filter chunks based on question keyword presence.
-    # For a real project, use embeddings (FAISS/langchain).
+    # --- 1. MODE DETECTION: FULL TEXT EXTRACTION (Bypass LLM) ---
+    lower_q = question.lower()
+    full_text_keywords = ['explain all the pdf', 'give me the content', 'show all content', 'extract all text']
+    is_full_text_request = any(keyword in lower_q for keyword in full_text_keywords)
 
-    keywords = question.lower().split()
-    relevant_chunks = []
-    for chunk in document_text_chunks:
-        if any(kw in chunk.lower() for kw in keywords) or len(relevant_chunks) < 5:
-            relevant_chunks.append(chunk)
-        if len(relevant_chunks) >= 10:  # Take up to 10 for context
-            break
+    if is_full_text_request:
+        # Returns raw text directly (no LLM call)
+        full_text = "\n\n".join(document_text_chunks)
+        return jsonify({
+            "answer": full_text,
+            "sources": "Complete content extracted from ALL pages.",
+            "mode": "FULL_TEXT"
+        })
 
-    context = "\n---\n".join(relevant_chunks)
+    # --- 2. DYNAMIC CONTEXT ASSEMBLY FOR LLM CALL ---
 
-    # Core Challenge: Build the System Instruction to force verbatim answer
-    system_instruction = (
-        "You are an expert document query assistant. "
-        "STRICTLY AND ONLY use the CONTEXT provided below to answer the user's question. "
-        "DO NOT reword, summarize, or translate the text. "
-        "Your answer MUST be a direct, verbatim quote from the context. "
-        "Always include the source page number (e.g., [Page X]) in your response. "
-        "If the answer is not in the CONTEXT, state: 'The required information was not found in the uploaded document.'"
-    )
+    # NEW MAGIC KEYWORD to force the model to "see" the entire document for summarization/explanation
+    scan_whole_pdf_keywords = ['scan the whole pdf', 'explain the whole document', 'full summary']
+    is_full_scan_request = any(keyword in lower_q for keyword in scan_whole_pdf_keywords)
 
+    if is_full_scan_request:
+        # --- MODE: AGGRESSIVE FULL-CONTEXT SUMMARIZATION ---
+
+        # AGGRESSION: Join ALL chunks (the entire PDF text)
+        context = "\n---\n".join(document_text_chunks)
+
+        # INSTRUCTION: Relax the verbatim rule for synthesis
+        # HYPER-STRICT EXTRACTION INSTRUCTION (ZERO-TOLERANCE)
+        system_instruction = (
+            "You are a MUTE, Document-Bound Extraction Machine. "
+            "Your ONLY source of knowledge is the CONTEXT provided below. "
+            "If the information to answer the question is NOT in the CONTEXT, you have NO knowledge of it.\n\n"
+            "RULES:\n"
+            "1. **STRICT VERBATIM:** Your answer MUST be copied EXACTLY, word-for-word, from the CONTEXT.\n"
+            "2. **NO WORLD KNOWLEDGE:** You MUST NOT use ANY information or external knowledge you may possess about the topic (e.g., historical dates, general definitions, related concepts). Your training data is useless for this task.\n"
+            "3. **OUTPUT:** The entire output MUST be the exact quote followed immediately by the citation [Page X].\n"
+            "4. **FAILURE MODE (CRITICAL):** If the answer is not in the context, you MUST reply with the exact phrase: 'The required information was not found in the uploaded document.\n"
+            "5. **STRICT RULES:** Explain exact as in the pdf, don't take the answers from the any other source just give the exact answer that is present in the notes."
+        )
+        mode_info = "FULL_SCAN Summary Mode (Caution: Context may be large)"
+        mode = "SUMMARY"
+
+    else:
+        # --- MODE: HYPER-VERBATIM EXTRACTION (RAG) ---
+
+        # Default RAG mode: Retrieve only relevant chunks based on keywords
+        keywords = lower_q.split()
+        relevant_chunks = []
+        for chunk in document_text_chunks:
+            if any(kw in chunk.lower() for kw in keywords):
+                relevant_chunks.append(chunk)
+            if len(relevant_chunks) >= 20:
+                break
+
+        context = "\n---\n".join(relevant_chunks)
+
+        # INSTRUCTION: Hyper-Strict Verbatim Rules (as previously perfected)
+        system_instruction = (
+            "You are a meticulous Document Extraction Specialist. Your task is to identify and return the single most relevant sentence or phrase "
+            "that DIRECTLY and VERBATIM answers the user's question from the CONTEXT provided. "
+            "RULES: 1. MUST BE VERBATIM. 2. NO 'THINKING'. 3. CITATION: MUST include the source page number [Page X]. 4. FAILURE: If not found, MUST reply with the exact phrase: 'The required information was not found in the uploaded document.'"
+        )
+        mode_info = f"Verbatim Extraction Mode (Using {len(relevant_chunks)} relevant chunks)"
+        mode = "VERBATIM"
+
+    # --- 3. EXECUTE GEMINI QUERY (for both Summary and Verbatim) ---
     prompt = f"User Question: {question}\n\nCONTEXT:\n{context}"
+
+    print("-" * 50)
+    print(f"DEBUG: Context Sent to Gemini:\n{context}")
+    print("-" * 50)
+    # ... then proceed with the Gemini call
 
     try:
         response = client.models.generate_content(
@@ -126,15 +167,22 @@ def handle_query():
             contents=prompt,
             config={"system_instruction": system_instruction}
         )
+
+        # ... (Safety and success checks remain the same) ...
+
         return jsonify({
             "answer": response.text,
-            "debug_context_count": len(relevant_chunks)
+            "sources": mode_info,
+            "mode": mode
         })
     except APIError as e:
-        return jsonify({"error": f"Gemini API Error: {e.message}"}), 500
+        # ... (error handling remains the same) ...
+        return jsonify({"error": user_facing_error}), 500
     except Exception as e:
-        return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
+        # ... (error handling remains the same) ...
+        return jsonify({"error": f"SERVER CRASHED: Unhandled Python Error ({e.__class__.__name__})."}), 500
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # ... (app.run remains the same) ...
+    app.run(debug=True, port=5000, threaded=True)

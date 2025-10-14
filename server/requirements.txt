@@ -3,7 +3,5 @@ flask-cors
 python-dotenv
 google-genai
 pypdf
-llama-index
-llama-index-embeddings-google
-llama-index-vector-stores-faiss # Fast vector store
-faiss-cpu # Vector store backend
+# We are skipping advanced vector store setup (FAISS, etc.) for time.
+# We'll stick to simple text extraction and prompt engineering.
