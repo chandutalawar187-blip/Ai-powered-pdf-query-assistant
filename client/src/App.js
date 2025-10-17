@@ -5,7 +5,7 @@ import PrivacyPolicy from './PrivacyPolicy';
 
 
 // NOTE: This must be the live Render URL you deployed!
-const API_URL = 'http://127.0.0.1:5000';
+const API_URL = 'https://ai-powered-pdf-query-assistant.onrender.com';
 
 // --- TABLE RENDERING UTILITY (MOVED OUTSIDE APP) ---
 

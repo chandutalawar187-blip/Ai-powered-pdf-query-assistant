@@ -352,4 +352,12 @@ def handle_query():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host="127.0.0.1", port=5000, threaded=True)
+    # --- PRODUCTION-READY BINDING ---
+    # Retrieve the PORT set by the host (Render) and bind to 0.0.0.0 (all interfaces)
+    # This is the correct binding for a public server.
+
+    # 1. Get the port number provided by the environment, defaulting to 5000 if local
+    port = int(os.environ.get("PORT", 5000))
+
+    # 2. Run the application using the dynamic port and host set to 0.0.0.0
+    app.run(debug=False, host="0.0.0.0", port=port, threaded=True)
