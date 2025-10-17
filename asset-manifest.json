@@ -1,15 +1,15 @@
 {
   "files": {
     "main.css": "/Ai-powered-pdf-query-assistant/static/css/main.1c5626f8.css",
-    "main.js": "/Ai-powered-pdf-query-assistant/static/js/main.c844f4d6.js",
+    "main.js": "/Ai-powered-pdf-query-assistant/static/js/main.e9e4fb6d.js",
     "static/js/453.eb570f4f.chunk.js": "/Ai-powered-pdf-query-assistant/static/js/453.eb570f4f.chunk.js",
     "index.html": "/Ai-powered-pdf-query-assistant/index.html",
     "main.1c5626f8.css.map": "/Ai-powered-pdf-query-assistant/static/css/main.1c5626f8.css.map",
-    "main.c844f4d6.js.map": "/Ai-powered-pdf-query-assistant/static/js/main.c844f4d6.js.map",
+    "main.e9e4fb6d.js.map": "/Ai-powered-pdf-query-assistant/static/js/main.e9e4fb6d.js.map",
     "453.eb570f4f.chunk.js.map": "/Ai-powered-pdf-query-assistant/static/js/453.eb570f4f.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.1c5626f8.css",
-    "static/js/main.c844f4d6.js"
+    "static/js/main.e9e4fb6d.js"
   ]
 }
