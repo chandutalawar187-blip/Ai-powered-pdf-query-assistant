@@ -1,4 +1,4 @@
-// client/src/App.js (FINAL COMPLETE FRONTEND CODE WITH FIRST/LAST NAME INPUT)
+// client/src/App.js (FINAL COMPLETE FRONTEND CODE WITH DEFAULT FILE NAME REMOVED)
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 // import './App.css'; // REMOVED: External CSS is not supported in single-file mandate
 
@@ -1008,6 +1008,7 @@ function App() {
     const [paperFile, setPaperFile] = useState(null);
 
     // CRITICAL NEW STATE FOR ACTIVE FILE
+    // FIX: Changed default value to null so no file name displays unless uploaded.
     const [activeNotesFileName, setActiveNotesFileName] = useState(null);
 
     // DUAL MESSAGE STATE
@@ -1104,8 +1105,8 @@ function App() {
                 setUsername(user.displayName || user.email || 'User');
                 setUserId(user.uid);
                 setToken(idToken);
-                // We rely on the backend/File Manager to confirm the active file name.
-                setActiveNotesFileName(prevState => prevState || 'Operating_Systems_Practice_Questions.pdf');
+                // FIX: Removed the hardcoded default file name fallback here.
+                // We rely on the File Manager data to determine the active file name.
 
                 if (pageMode === 'login' || pageMode === 'register' || pageMode === 'consent_display') {
                     setPageMode('tool');
