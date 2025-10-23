@@ -25,13 +25,21 @@ import firebase_admin
 from firebase_admin import credentials, auth
 
 # NOTE: The credentials must be loaded from external environment variables for security.
+# --- Firebase Initialization Block ---
 try:
     # --- READING SECRETS FROM ENVIRONMENT (os.getenv) ---
     FIREBASE_TYPE = os.getenv("FIREBASE_TYPE")
     FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
     FIREBASE_PRIVATE_KEY_ID = os.getenv("FIREBASE_PRIVATE_KEY_ID")
-    # CRITICAL: Reading the private key safely
-    FIREBASE_PRIVATE_KEY = os.getenv("FIREBASE_PRIVATE_KEY", "").replace('\\n', '\n')
+
+    # CRITICAL: Read the private key without assuming it's escaped with \\n.
+    # We strip spaces and handle the literal newlines from the environment variable.
+    # The .env file should contain the key exactly as provided by the user.
+    FIREBASE_PRIVATE_KEY_RAW = os.getenv("FIREBASE_PRIVATE_KEY", "")
+    # Ensure the key is usable by replacing *any* newline escape sequences that
+    # might have been added by the environment with actual newlines.
+    FIREBASE_PRIVATE_KEY = FIREBASE_PRIVATE_KEY_RAW.replace(r'\n', '\n').strip()
+
     FIREBASE_CLIENT_EMAIL = os.getenv("FIREBASE_CLIENT_EMAIL")
     FIREBASE_CLIENT_ID = os.getenv("FIREBASE_CLIENT_ID")
     FIREBASE_AUTH_URI = os.getenv("FIREBASE_AUTH_URI")
@@ -42,10 +50,11 @@ try:
     # --- END OF SECRET READING ---
 
     # Check if critical secrets are present before attempting initialization
-    if not all([FIREBASE_PROJECT_ID, FIREBASE_PRIVATE_KEY_ID, FIREBASE_PRIVATE_KEY]):
-        raise EnvironmentError("Missing critical Firebase environment variables.")
+    if not all([FIREBASE_PROJECT_ID, FIREBASE_PRIVATE_KEY_ID, FIREBASE_PRIVATE_KEY, FIREBASE_CLIENT_EMAIL]):
+        raise EnvironmentError("Missing critical Firebase environment variables for initialization.")
 
     # Create credential dictionary from environment variables
+    # NOTE: The private key is now correctly parsed with newlines
     cred_dict = {
         "type": FIREBASE_TYPE,
         "project_id": FIREBASE_PROJECT_ID,
@@ -67,12 +76,18 @@ try:
 
 
 except EnvironmentError as ee:
-    print(f"Warning: Firebase Admin SDK initialization skipped. {ee}")
+    # Print custom warning for visibility during local development
+    print("----------------------------------------------------------")
+    print(f"⚠️ FIREBASE ADMIN INIT FAILED: {ee}")
+    print("This server will run in UNVERIFIED mode. Fix .env file.")
+    print("----------------------------------------------------------")
+    firebase_admin = None
 except Exception as e:
-    print(f"Warning: Firebase Admin SDK initialization failed. Error: {e}")
+    print(f"FATAL WARNING: Firebase Admin SDK failed to load. Error: {e}")
+    firebase_admin = None
 
 # NOTE: The 'firebase_admin' variable will be None if initialization failed.
-if 'firebase_admin' not in locals():
+if 'firebase_admin' not in locals() or firebase_admin is None:
     firebase_admin = None
 
 
@@ -81,7 +96,8 @@ def verify_firebase_token(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not firebase_admin:
-            print("WARNING: Firebase Admin not initialized. Skipping token verification.")
+            # This path is taken if the SDK failed to initialize at startup
+            print("WARNING: Firebase Admin not initialized. Rejecting request.")
             return jsonify({"error": "Server authentication setup incomplete. Cannot verify user."}), 500
 
         auth_header = request.headers.get('Authorization')
@@ -95,6 +111,7 @@ def verify_firebase_token(f):
             request.user_id = decoded_token['uid']  # Attach the user_id to the request object
         except Exception as e:
             print(f"Firebase Token Verification Failed: {e}")
+            # Note: 401 is correct for invalid token
             return jsonify({"error": "Unauthorized: Invalid or expired token."}), 401
 
         return f(*args, **kwargs)
@@ -106,7 +123,6 @@ def verify_firebase_token(f):
 
 
 # --- INITIAL SETUP ---
-load_dotenv()
 app = Flask(__name__)
 # CRITICAL: Allow credentials to be sent (needed for cookies/session storage)
 CORS(app, supports_credentials=True)
