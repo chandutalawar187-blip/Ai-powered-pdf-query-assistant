@@ -1,4 +1,4 @@
-// client/src/App.js (FINAL COMPLETE FRONTEND CODE WITH DEFAULT FILE NAME REMOVED)
+// client/src/App.js (FINAL COMPLETE FRONTEND CODE WITH DUAL UPLOAD, DARK MODE & PAGE NAVIGATION)
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 // import './App.css'; // REMOVED: External CSS is not supported in single-file mandate
 
@@ -10,7 +10,7 @@ const firebaseConfig = {
     projectId: "ai-powered-pdf-query-assistant",
     storageBucket: "ai-powered-pdf-query-assistant.firebasestorage.app",
     messagingSenderId: "350459830933",
-    appId: "1:350459830933:web:2c18f7b80bbe6dac27b19c",
+    appId: "1:350459830933:web:2c18f7b80933:web:2c18f7b80bbe6dac27b19c",
     measurementId: "G-53E18BYWMG"
 };
 
@@ -77,7 +77,7 @@ const PrivacyPolicy = ({ colors, setPageMode }) => (
 
         <h3 style={{ marginTop: '20px', color: colors.textPrimary }}>1. Data Collection and Storage</h3>
         <p style={{ lineHeight: '1.6', color: colors.textSecondary }}>
-            We collect the PDF files you upload, along with your username and hashed password (for authentication only). All uploaded files are stored temporarily on the server's disk space linked to your user account to facilitate the Retrieval-Augmented Generation (RAG) process. Your files are private and only accessible by your account.
+            We collect the PDF files you upload, along with your username and hashed password (for authentication only). All uploaded files are stored temporarily on the server's disk space linked to your user account to facilitate the Retrieval-Augmented Generation (RAG) process. Your files are private and only accessible by your account. NOTE: ⚠️ once the server restarts your uploaded files will be disappeared so please make sure that your files will be accessible only for the live session not for the Long sessions. This is done on concerns about the privacy so that your data will be safe.
         </p>
 
         <h3 style={{ marginTop: '20px', color: colors.textPrimary }}>2. Data Deletion</h3>
@@ -114,7 +114,7 @@ const PrivacyPolicy = ({ colors, setPageMode }) => (
 
 // --- API URL CONFIGURATION ---
 const RENDER_API_URL = 'https://ai-powered-pdf-query-assistant.onrender.com';
-const LOCAL_API_URL = 'http://localhost:5000';
+const LOCAL_API_URL = 'http://127.0.0.1:5000';
 
 // CRITICAL: Determine the correct API_URL based on where the frontend is running
 const API_URL = window.location.hostname === 'localhost'
@@ -122,36 +122,59 @@ const API_URL = window.location.hostname === 'localhost'
               : RENDER_API_URL;
 
 // --- GLOBAL UTILITIES & STYLES (Keep as is) ---
+
+// Function to convert the Markdown table (received from Python) into basic HTML table tags
+// FIX: Reads headers exactly as provided by Python, fixing the IoT/M2M issue.
 const markdownTableToHtml = (markdown, isDark) => {
-    // ... (utility function body remains the same)
+    // Styling constants for the HTML table
     const tableStyles = {
         tableBg: isDark ? '#2d3748' : '#fff',
         thBg: isDark ? '#4a5568' : '#f2f2f2',
         thText: isDark ? '#e2e8f0' : '#333',
         tdText: isDark ? '#a0aec0' : '#333',
         tdBorder: isDark ? '#4a5568' : '#eee',
+        rowOddBg: isDark ? '#1a202c' : '#fafafa',
     };
 
     const lines = markdown.trim().split('\n').filter(line => line.includes('|'));
 
     if (lines.length < 2) return markdown;
 
-    // The backend is instructed to output 'Parameter', 'IoT', and 'CPS'.
-    const headerLine = lines[0].split('|').filter(h => h.trim()).map(h => `<th style="background-color: ${tableStyles.thBg}; color: ${tableStyles.thText}; padding: 10px; border: 1px solid ${tableStyles.tdBorder}; text-align: left;">${h.trim().replace('Parameter', 'Parameter (Page(s))')}</th>`).join('');
+    // 1. Get the raw cells from the header line (lines[0])
+    const rawHeaderCells = lines[0].split('|').map(h => h.trim()).filter(h => h);
 
-    const header = headerLine ? `<thead><tr>${headerLine}</tr></thead>` : '';
+    // 2. Map cells to TH tags, ensuring the Parameter column is labeled correctly
+    const headerLine = rawHeaderCells.map((cellText, index) => {
+        let display_text = cellText;
+        if (index === 0) {
+             // Ensure the first column is always labeled correctly for citation
+             display_text = 'Parameter (Page(s))';
+        }
 
+        return `<th style="background-color: ${tableStyles.thBg}; color: ${tableStyles.thText}; padding: 10px; border: 1px solid ${tableStyles.tdBorder}; text-align: left;">${display_text}</th>`;
+    }).join('');
+
+    const header = `<thead><tr>${headerLine}</tr></thead>`;
+
+    // Remaining lines are the body
     const bodyLines = lines.slice(2);
 
     const body = bodyLines.map((line, index) => {
-        const rowBg = (index % 2 === 0) ? tableStyles.tableBg : (isDark ? '#1a202c' : '#fafafa');
+        // Set row background based on alternating rows
+        const rowBg = (index % 2 === 0) ? tableStyles.tableBg : tableStyles.rowOddBg;
 
-        const rowCells = line.split('|').filter(cell => cell.trim()).map(cell => `<td style="padding: 8px; border: 1px solid ${tableStyles.tdBorder}; color: ${tableStyles.tdText};">${cell.trim()}</td>`).join('');
+        // CRITICAL FIX: Explicitly setting td text color and background color
+        const rowCells = line.split('|').filter(cell => cell.trim()).map(cell =>
+            `<td style="padding: 8px; border: 1px solid ${tableStyles.tdBorder}; color: ${tableStyles.tdText}; background-color: ${rowBg};">
+                ${cell.trim()}
+            </td>`).join('');
 
-        return `<tr style="background-color: ${rowBg};">${rowCells}</tr>`;
+        // Row styling is now handled by the cell background property
+        return `<tr>${rowCells}</tr>`;
     }).join('');
 
-    return `<table class="comparison-table" style="width:100%; border-collapse: collapse; margin-top: 10px; color: ${tableStyles.tdText};">${header}<tbody>${body}</tbody></table>`;
+    // Apply basic inline table styling for presentation
+    return `<table class="comparison-table" style="width:100%; border-collapse: collapse; margin-top: 10px;">${header}<tbody>${body}</tbody></table>`;
 };
 
 
@@ -259,30 +282,33 @@ const SocialLoginButton = ({ provider, colors, setLoading, setAuthData, setMessa
     const iconMap = {
         google: 'Google',
         github: 'GitHub',
-        // Microsoft removed
+        microsoft: 'Microsoft',
     };
     const colorMap = {
         google: '#DB4437', // Red
         github: '#24292e', // Dark Gray/Black
+        microsoft: '#00A4EF', // Blue
     };
 
-    const handleClick = async () => {
+    const handleClick = async (providerName) => {
         if (!firebaseLoaded) return;
         try {
             setLoading(true);
-            setMessage(`Signing in with ${iconMap[provider]}...`);
+            setMessage(`Signing in with ${iconMap[providerName]}...`);
             const auth = getFirebaseAuth();
             let providerInstance;
 
-            switch (provider) {
+            switch (providerName) {
                 case 'google':
                     providerInstance = new window.firebase.auth.GoogleAuthProvider();
                     break;
                 case 'github':
                     providerInstance = new window.firebase.auth.GithubAuthProvider();
                     break;
+                case 'microsoft':
+                    providerInstance = new window.firebase.auth.OAuthProvider('microsoft.com'); // Use OAuthProvider for generic MS/LinkedIn/Yahoo
+                    break;
                 default:
-                    // Should not happen if buttons are removed, but safety check
                     throw new Error("Unsupported provider");
             }
 
@@ -295,7 +321,7 @@ const SocialLoginButton = ({ provider, colors, setLoading, setAuthData, setMessa
                 email: user.email || 'N/A',
                 userId: user.uid,
                 token: await user.getIdToken(),
-                provider: iconMap[provider]
+                provider: iconMap[providerName]
             });
             setPageMode('consent_display');
             setMessage(``);
@@ -310,25 +336,71 @@ const SocialLoginButton = ({ provider, colors, setLoading, setAuthData, setMessa
     };
 
     return (
-        <button
-            onClick={handleClick}
-            disabled={!firebaseLoaded}
-            style={{
-                ...baseButtonStyle,
-                backgroundColor: colorMap[provider],
-                color: 'white',
-                padding: '12px 20px',
-                width: '100%',
-                marginBottom: '10px',
-                boxShadow: `0 2px 4px ${colors.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)'}`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '10px',
-            }}
-        >
-            <span>Sign in with {iconMap[provider]}</span>
-        </button>
+        <>
+            {/* Google */}
+            <button
+                onClick={() => handleClick('google')}
+                disabled={!firebaseLoaded}
+                style={{
+                    ...baseButtonStyle,
+                    backgroundColor: colorMap.google,
+                    color: 'white',
+                    marginBottom: '10px',
+                    padding: '12px 20px',
+                    width: '100%',
+                    boxShadow: `0 2px 4px ${colors.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)'}`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '10px',
+                }}
+            >
+                <span>Sign in with Google</span>
+            </button>
+            {/* GitHub */}
+            <button
+                onClick={() => handleClick('github')}
+                disabled={!firebaseLoaded}
+                style={{
+                    ...baseButtonStyle,
+                    backgroundColor: colorMap.github,
+                    color: 'white',
+                    marginBottom: '10px',
+                    padding: '12px 20px',
+                    width: '100%',
+                    boxShadow: `0 2px 4px ${colors.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)'}`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '10px',
+                }}
+            >
+                <span>Sign in with GitHub</span>
+            </button>
+
+            {/* --- FIX: Microsoft login button removed as requested --- */}
+            {/*
+            <button
+                onClick={() => handleClick('microsoft')}
+                disabled={!firebaseLoaded}
+                style={{
+                    ...baseButtonStyle,
+                    backgroundColor: colorMap.microsoft,
+                    color: 'white',
+                    padding: '12px 20px',
+                    width: '100%',
+                    marginBottom: '10px',
+                    boxShadow: `0 2px 4px ${colors.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)'}`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '10px',
+                }}
+            >
+                <span>Sign in with Microsoft</span>
+            </button>
+            */}
+        </>
     );
 };
 
@@ -724,8 +796,15 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
             )}
             {!resetMode && (
                 <div style={{ marginBottom: '20px', pointerEvents: firebaseLoaded ? 'auto' : 'none', opacity: firebaseLoaded ? 1 : 0.5 }}>
-                    <SocialLoginButton provider="github" colors={colors} setLoading={setLoading} setAuthData={setAuthData} setMessage={setMessage} firebaseLoaded={firebaseLoaded} setPendingAuthData={setPendingAuthData} setPageMode={setPageMode} />
+
+                    {/* --- FIX: Only one call to SocialLoginButton to remove duplicates --- */}
+                    <SocialLoginButton provider="all" colors={colors} setLoading={setLoading} setAuthData={setAuthData} setMessage={setMessage} firebaseLoaded={firebaseLoaded} setPendingAuthData={setPendingAuthData} setPageMode={setPageMode} />
+
+                    {/* --- DUPLICATE CALLS REMOVED ---
                     <SocialLoginButton provider="google" colors={colors} setLoading={setLoading} setAuthData={setAuthData} setMessage={setMessage} firebaseLoaded={firebaseLoaded} setPendingAuthData={setPendingAuthData} setPageMode={setPageMode} />
+                    <SocialLoginButton provider="microsoft" colors={colors} setLoading={setLoading} setAuthData={setAuthData} setMessage={setMessage} firebaseLoaded={firebaseLoaded} setPendingAuthData={setPendingAuthData} setPageMode={setPageMode} />
+                    */}
+
                     {/* Microsoft login button removed */}
                     <div style={{ margin: '20px 0', fontSize: '0.9em', color: colors.textSecondary, position: 'relative' }}>
                         <div style={{ content: '""', position: 'absolute', top: '50%', left: 0, right: 0, borderTop: `1px solid ${colors.borderColor}` }}></div>
@@ -895,7 +974,7 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
         if (isAuthenticated && token) {
             fetchFiles();
         }
-    }, [isAuthenticated, token, fetchFiles]);
+    }, [isAuthenticated, token, userId]);
 
     return (
         <div style={{
