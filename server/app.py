@@ -32,12 +32,10 @@ try:
     FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
     FIREBASE_PRIVATE_KEY_ID = os.getenv("FIREBASE_PRIVATE_KEY_ID")
 
-    # CRITICAL: Read the private key without assuming it's escaped with \\n.
-    # We strip spaces and handle the literal newlines from the environment variable.
-    # The .env file should contain the key exactly as provided by the user.
+    # CRITICAL: Read the private key using the most robust method:
+    # 1. Read the raw string (it may contain literal \n or \\n from shell/dotenv).
     FIREBASE_PRIVATE_KEY_RAW = os.getenv("FIREBASE_PRIVATE_KEY", "")
-    # Ensure the key is usable by replacing *any* newline escape sequences that
-    # might have been added by the environment with actual newlines.
+    # 2. Safely replace *any* backslash-n sequences with actual newlines (\n).
     FIREBASE_PRIVATE_KEY = FIREBASE_PRIVATE_KEY_RAW.replace(r'\n', '\n').strip()
 
     FIREBASE_CLIENT_EMAIL = os.getenv("FIREBASE_CLIENT_EMAIL")
@@ -51,10 +49,11 @@ try:
 
     # Check if critical secrets are present before attempting initialization
     if not all([FIREBASE_PROJECT_ID, FIREBASE_PRIVATE_KEY_ID, FIREBASE_PRIVATE_KEY, FIREBASE_CLIENT_EMAIL]):
+        # This will be triggered if any required field is missing in the .env file or render config
         raise EnvironmentError("Missing critical Firebase environment variables for initialization.")
 
     # Create credential dictionary from environment variables
-    # NOTE: The private key is now correctly parsed with newlines
+    # The 'private_key' field now holds the correctly formatted key string with real newlines.
     cred_dict = {
         "type": FIREBASE_TYPE,
         "project_id": FIREBASE_PROJECT_ID,
