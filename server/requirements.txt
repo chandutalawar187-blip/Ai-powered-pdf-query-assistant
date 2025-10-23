@@ -6,3 +6,5 @@ pypdf
 PyMuPDF
 Pillow
 PyPDF2
+gunicorn
+fcntl
