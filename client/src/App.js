@@ -984,9 +984,12 @@ function App() {
                 setUsername(user.displayName || user.email || 'User');
                 setUserId(user.uid);
                 setToken(idToken);
+
+                // --- FIX: REMOVED DEFAULT PLACEHOLDER ---
                 // In a real app, we would fetch the active file name from the backend here.
-                // For now, we set a default/placeholder or rely on a successful upload.
-                setActiveNotesFileName(prevState => prevState || 'Operating_Systems_Practice_Questions.pdf');
+                // For now, we set it to null on login, user must select one.
+                setActiveNotesFileName(null);
+                // --- END FIX ---
 
                 if (pageMode === 'login' || pageMode === 'register') {
                     setPageMode('tool');
@@ -1132,7 +1135,10 @@ function App() {
                 setAnswer('Unauthorized. Please log in.');
                 handleLogout(); // Force logout on auth failure
             } else {
-                setAnswer(`Query Error: ${data.error}`); setSources(''); setMode('ERROR');
+                // This will catch the 429 "Too Many Requests" error from the backend
+                setAnswer(`Query Error: ${data.error}`);
+                setSources(data.sources || '');
+                setMode('ERROR');
             }
         } catch (error) {
             setAnswer('Network Error: Could not connect to backend server.'); setSources(''); setMode('ERROR');
@@ -1173,6 +1179,10 @@ function App() {
         }
 
         if (mode === 'ERROR') {
+            // Check for the specific query limit error message
+            if (answer.includes("daily query limit")) {
+                 return <p style={{ color: 'red', fontWeight: 'bold' }}>{answer}</p>;
+            }
             return <p style={{ color: 'red', fontWeight: 'bold' }}>{answer}</p>;
         }
 
