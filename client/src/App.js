@@ -1,4 +1,4 @@
-// client/src/App.js (FINAL COMPLETE FRONTEND CODE WITH DUAL UPLOAD, DARK MODE & PAGE NAVIGATION)
+// client/src/App.js (FINAL COMPLETE FRONTEND CODE WITH PASSWORD RESET & LOGIN THEME TOGGLE)
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 // import './App.css'; // REMOVED: External CSS is not supported in single-file mandate
 
@@ -10,7 +10,7 @@ const firebaseConfig = {
     projectId: "ai-powered-pdf-query-assistant",
     storageBucket: "ai-powered-pdf-query-assistant.firebasestorage.app",
     messagingSenderId: "350459830933",
-    appId: "1:350459830933:web:2c18f7b80933:web:2c18f7b80bbe6dac27b19c",
+    appId: "1:350459830933:web:2c18f7b80bbe6dac27b19c",
     measurementId: "G-53E18BYWMG"
 };
 
@@ -77,7 +77,7 @@ const PrivacyPolicy = ({ colors, setPageMode }) => (
 
         <h3 style={{ marginTop: '20px', color: colors.textPrimary }}>1. Data Collection and Storage</h3>
         <p style={{ lineHeight: '1.6', color: colors.textSecondary }}>
-            We collect the PDF files you upload, along with your username and hashed password (for authentication only). All uploaded files are stored temporarily on the server's disk space linked to your user account to facilitate the Retrieval-Augmented Generation (RAG) process. Your files are private and only accessible by your account. NOTE: ⚠️ once the server restarts your uploaded files will be disappeared so please make sure that your files will be accessible only for the live session not for the Long sessions. This is done on concerns about the privacy so that your data will be safe.
+            We collect the PDF files you upload, along with your username and hashed password (for authentication only). All uploaded files are stored temporarily on the server's disk space linked to your user account to facilitate the Retrieval-Augmented Generation (RAG) process. Your files are private and only accessible by your account.
         </p>
 
         <h3 style={{ marginTop: '20px', color: colors.textPrimary }}>2. Data Deletion</h3>
@@ -114,7 +114,7 @@ const PrivacyPolicy = ({ colors, setPageMode }) => (
 
 // --- API URL CONFIGURATION ---
 const RENDER_API_URL = 'https://ai-powered-pdf-query-assistant.onrender.com';
-const LOCAL_API_URL = 'http://127.0.0.1:5000';
+const LOCAL_API_URL = 'http://localhost:5000';
 
 // CRITICAL: Determine the correct API_URL based on where the frontend is running
 const API_URL = window.location.hostname === 'localhost'
@@ -122,59 +122,36 @@ const API_URL = window.location.hostname === 'localhost'
               : RENDER_API_URL;
 
 // --- GLOBAL UTILITIES & STYLES (Keep as is) ---
-
-// Function to convert the Markdown table (received from Python) into basic HTML table tags
-// FIX: Reads headers exactly as provided by Python, fixing the IoT/M2M issue.
 const markdownTableToHtml = (markdown, isDark) => {
-    // Styling constants for the HTML table
+    // ... (utility function body remains the same)
     const tableStyles = {
         tableBg: isDark ? '#2d3748' : '#fff',
         thBg: isDark ? '#4a5568' : '#f2f2f2',
         thText: isDark ? '#e2e8f0' : '#333',
         tdText: isDark ? '#a0aec0' : '#333',
         tdBorder: isDark ? '#4a5568' : '#eee',
-        rowOddBg: isDark ? '#1a202c' : '#fafafa',
     };
 
     const lines = markdown.trim().split('\n').filter(line => line.includes('|'));
 
     if (lines.length < 2) return markdown;
 
-    // 1. Get the raw cells from the header line (lines[0])
-    const rawHeaderCells = lines[0].split('|').map(h => h.trim()).filter(h => h);
+    // The backend is instructed to output 'Parameter', 'IoT', and 'CPS'.
+    const headerLine = lines[0].split('|').filter(h => h.trim()).map(h => `<th style="background-color: ${tableStyles.thBg}; color: ${tableStyles.thText}; padding: 10px; border: 1px solid ${tableStyles.tdBorder}; text-align: left;">${h.trim().replace('Parameter', 'Parameter (Page(s))')}</th>`).join('');
 
-    // 2. Map cells to TH tags, ensuring the Parameter column is labeled correctly
-    const headerLine = rawHeaderCells.map((cellText, index) => {
-        let display_text = cellText;
-        if (index === 0) {
-             // Ensure the first column is always labeled correctly for citation
-             display_text = 'Parameter (Page(s))';
-        }
+    const header = headerLine ? `<thead><tr>${headerLine}</tr></thead>` : '';
 
-        return `<th style="background-color: ${tableStyles.thBg}; color: ${tableStyles.thText}; padding: 10px; border: 1px solid ${tableStyles.tdBorder}; text-align: left;">${display_text}</th>`;
-    }).join('');
-
-    const header = `<thead><tr>${headerLine}</tr></thead>`;
-
-    // Remaining lines are the body
     const bodyLines = lines.slice(2);
 
     const body = bodyLines.map((line, index) => {
-        // Set row background based on alternating rows
-        const rowBg = (index % 2 === 0) ? tableStyles.tableBg : tableStyles.rowOddBg;
+        const rowBg = (index % 2 === 0) ? tableStyles.tableBg : (isDark ? '#1a202c' : '#fafafa');
 
-        // CRITICAL FIX: Explicitly setting td text color and background color
-        const rowCells = line.split('|').filter(cell => cell.trim()).map(cell =>
-            `<td style="padding: 8px; border: 1px solid ${tableStyles.tdBorder}; color: ${tableStyles.tdText}; background-color: ${rowBg};">
-                ${cell.trim()}
-            </td>`).join('');
+        const rowCells = line.split('|').filter(cell => cell.trim()).map(cell => `<td style="padding: 8px; border: 1px solid ${tableStyles.tdBorder}; color: ${tableStyles.tdText};">${cell.trim()}</td>`).join('');
 
-        // Row styling is now handled by the cell background property
-        return `<tr>${rowCells}</tr>`;
+        return `<tr style="background-color: ${rowBg};">${rowCells}</tr>`;
     }).join('');
 
-    // Apply basic inline table styling for presentation
-    return `<table class="comparison-table" style="width:100%; border-collapse: collapse; margin-top: 10px;">${header}<tbody>${body}</tbody></table>`;
+    return `<table class="comparison-table" style="width:100%; border-collapse: collapse; margin-top: 10px; color: ${tableStyles.tdText};">${header}<tbody>${body}</tbody></table>`;
 };
 
 
@@ -277,37 +254,35 @@ const AboutPage = ({ colors, setPageMode }) => (
 );
 
 
-// --- SOCIAL LOGIN ICON HELPER (UPDATED for Firebase) ---
-const SocialLoginButton = ({ provider, colors, setLoading, setAuthData, setMessage, firebaseLoaded, setPendingAuthData, setPageMode }) => {
+// --- SOCIAL LOGIN ICON HELPER (UPDATED for Firebase - Microsoft Removed) ---
+const SocialLoginButton = ({ provider, colors, setLoading, setAuthData, setMessage, firebaseLoaded }) => {
     const iconMap = {
         google: 'Google',
         github: 'GitHub',
-        microsoft: 'Microsoft',
+        // microsoft: 'Microsoft', // REMOVED
     };
     const colorMap = {
         google: '#DB4437', // Red
         github: '#24292e', // Dark Gray/Black
-        microsoft: '#00A4EF', // Blue
+        // microsoft: '#00A4EF', // Blue // REMOVED
     };
 
-    const handleClick = async (providerName) => {
+    const handleClick = async () => {
         if (!firebaseLoaded) return;
         try {
             setLoading(true);
-            setMessage(`Signing in with ${iconMap[providerName]}...`);
+            setMessage(`Signing in with ${iconMap[provider]}...`);
             const auth = getFirebaseAuth();
             let providerInstance;
 
-            switch (providerName) {
+            switch (provider) {
                 case 'google':
                     providerInstance = new window.firebase.auth.GoogleAuthProvider();
                     break;
                 case 'github':
                     providerInstance = new window.firebase.auth.GithubAuthProvider();
                     break;
-                case 'microsoft':
-                    providerInstance = new window.firebase.auth.OAuthProvider('microsoft.com'); // Use OAuthProvider for generic MS/LinkedIn/Yahoo
-                    break;
+                // REMOVED Microsoft Case
                 default:
                     throw new Error("Unsupported provider");
             }
@@ -315,16 +290,16 @@ const SocialLoginButton = ({ provider, colors, setLoading, setAuthData, setMessa
             const result = await auth.signInWithPopup(providerInstance);
             const user = result.user;
 
-            // --- CRITICAL CHANGE: Redirect to Consent Page ---
-            setPendingAuthData({
-                username: user.displayName || 'N/A',
-                email: user.email || 'N/A',
+            // Get the ID token to send to the backend for verification
+            const idToken = await user.getIdToken();
+
+            setAuthData({
+                isAuthenticated: true,
+                username: user.displayName || user.email || 'User',
                 userId: user.uid,
-                token: await user.getIdToken(),
-                provider: iconMap[providerName]
+                token: idToken,
             });
-            setPageMode('consent_display');
-            setMessage(``);
+            setMessage(`Sign-in with ${iconMap[provider]} successful!`);
 
         } catch (error) {
             console.error("Firebase Auth Error:", error);
@@ -336,165 +311,34 @@ const SocialLoginButton = ({ provider, colors, setLoading, setAuthData, setMessa
     };
 
     return (
-        <>
-            {/* Google */}
-            <button
-                onClick={() => handleClick('google')}
-                disabled={!firebaseLoaded}
-                style={{
-                    ...baseButtonStyle,
-                    backgroundColor: colorMap.google,
-                    color: 'white',
-                    marginBottom: '10px',
-                    padding: '12px 20px',
-                    width: '100%',
-                    boxShadow: `0 2px 4px ${colors.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)'}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '10px',
-                }}
-            >
-                <span>Sign in with Google</span>
-            </button>
-            {/* GitHub */}
-            <button
-                onClick={() => handleClick('github')}
-                disabled={!firebaseLoaded}
-                style={{
-                    ...baseButtonStyle,
-                    backgroundColor: colorMap.github,
-                    color: 'white',
-                    marginBottom: '10px',
-                    padding: '12px 20px',
-                    width: '100%',
-                    boxShadow: `0 2px 4px ${colors.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)'}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '10px',
-                }}
-            >
-                <span>Sign in with GitHub</span>
-            </button>
-
-            {/* --- FIX: Microsoft login button removed as requested --- */}
-            {/*
-            <button
-                onClick={() => handleClick('microsoft')}
-                disabled={!firebaseLoaded}
-                style={{
-                    ...baseButtonStyle,
-                    backgroundColor: colorMap.microsoft,
-                    color: 'white',
-                    padding: '12px 20px',
-                    width: '100%',
-                    marginBottom: '10px',
-                    boxShadow: `0 2px 4px ${colors.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)'}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '10px',
-                }}
-            >
-                <span>Sign in with Microsoft</span>
-            </button>
-            */}
-        </>
+        <button
+            onClick={handleClick}
+            disabled={!firebaseLoaded}
+            style={{
+                ...baseButtonStyle,
+                backgroundColor: colorMap[provider],
+                color: 'white',
+                padding: '12px 20px',
+                width: '100%',
+                marginBottom: '10px',
+                boxShadow: `0 2px 4px ${colors.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.2)'}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '10px',
+            }}
+        >
+            <span>Sign in with {iconMap[provider]}</span>
+        </button>
     );
 };
 
 
-// --- CONSENT DISPLAY PAGE (NEW COMPONENT) ---
-const ConsentDisplayPage = ({ colors, pendingAuthData, setAuthData, setPageMode }) => {
-
-    // Function to finalize login after user confirms
-    const finalizeLogin = () => {
-        setAuthData({
-            isAuthenticated: true,
-            username: pendingAuthData.username,
-            userId: pendingAuthData.userId,
-            token: pendingAuthData.token,
-        });
-        setPageMode('tool');
-    };
-
-    const data = [
-        { label: 'Provider', value: pendingAuthData.provider },
-        { label: 'Name (Display Name)', value: pendingAuthData.username },
-        { label: 'Email Address', value: pendingAuthData.email },
-        { label: 'Unique User ID (UID)', value: pendingAuthData.userId.substring(0, 8) + '...' },
-    ];
-
-    return (
-        <div style={{
-            padding: '40px',
-            maxWidth: '550px',
-            margin: '5vh auto',
-            backgroundColor: colors.bgSecondary,
-            borderRadius: '15px',
-            boxShadow: `0 10px 30px ${colors.isDark ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.1)'}`,
-            color: colors.textPrimary,
-            border: `1px solid ${colors.borderColor}`,
-            textAlign: 'center',
-        }}>
-            <h2 style={{ color: colors.accentColor, fontSize: '1.8em', marginBottom: '10px' }}>
-                Account Data Access
-            </h2>
-            <p style={{ color: colors.textSecondary, marginBottom: '30px' }}>
-                You have successfully signed in using **{pendingAuthData.provider}**.
-                We use the following information to personalize your experience and secure your uploaded files.
-            </p>
-
-            <div style={{ textAlign: 'left', marginBottom: '30px', border: `1px solid ${colors.borderColor}`, borderRadius: '8px', overflow: 'hidden' }}>
-                {data.map((item, index) => (
-                    <div
-                        key={item.label}
-                        style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            padding: '12px 15px',
-                            backgroundColor: index % 2 === 0 ? colors.tableBg : colors.answerBg,
-                            borderBottom: index < data.length - 1 ? `1px solid ${colors.borderColor}` : 'none'
-                        }}
-                    >
-                        <span style={{ fontWeight: '600', color: colors.textPrimary }}>{item.label}:</span>
-                        <span style={{ color: colors.accentColor, fontWeight: '500' }}>{item.value}</span>
-                    </div>
-                ))}
-            </div>
-
-            <p style={{ fontSize: '0.9em', color: colors.textSecondary, marginTop: '20px' }}>
-                *Note: Your unique ID is used by the backend to link your documents to your account. Your files are private.
-            </p>
-
-            <button
-                onClick={finalizeLogin}
-                style={{
-                    ...baseQueryButtonStyle,
-                    backgroundColor: colors.successBg,
-                    color: 'white',
-                    marginTop: '20px',
-                    width: '70%',
-                }}
-            >
-                Continue to Query Assistant
-            </button>
-        </div>
-    );
-};
-
-
-// --- PROFESSIONAL LOGIN/REGISTER COMPONENT (UPDATED for Firebase) ---
-const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUserId, setToken, firebaseLoaded, setPendingAuthData }) => {
+// --- PROFESSIONAL LOGIN/REGISTER COMPONENT (UPDATED with Theme Toggle) ---
+const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUserId, setToken, firebaseLoaded, toggleTheme, isDark }) => {
     const [isLogin, setIsLogin] = useState(true);
-    const [emailInput, setEmailInput] = useState(''); // Changed from usernameInput to emailInput
+    const [usernameInput, setUsernameInput] = useState('');
     const [passwordInput, setPasswordInput] = useState('');
-
-    // NEW STATES for Name fields
-    const [firstName, setFirstName] = useState('');
-    const [lastName, setLastName] = useState('');
-
     const [message, setMessage] = useState('');
     const [loading, setLoading] = useState(false);
 
@@ -517,7 +361,7 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
             setMessage('Firebase is still loading. Please wait.');
             return;
         }
-        if (!emailInput) {
+        if (!usernameInput) {
             setMessage('Please enter your email address above to reset the password.');
             return;
         }
@@ -527,10 +371,10 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
         try {
             const auth = getFirebaseAuth();
             // Firebase function to send the reset email
-            await auth.sendPasswordResetEmail(emailInput);
-            setMessage(`Success! Password reset link sent to ${emailInput}. Check your inbox.`);
+            await auth.sendPasswordResetEmail(usernameInput);
+            setMessage(`Success! Password reset link sent to ${usernameInput}. Check your inbox.`);
             setResetMode(false); // Switch back to login view
-            setEmailInput('');
+            setUsernameInput('');
         } catch (error) {
             console.error("Password Reset Error:", error);
             setMessage(`Reset Failed: ${error.message.replace('Firebase:', '').trim()}`);
@@ -552,35 +396,16 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
         try {
             const auth = getFirebaseAuth();
             let userCredential;
-            let displayUsername;
 
             if (isLogin) {
-                userCredential = await auth.signInWithEmailAndPassword(emailInput, passwordInput);
-                // For login, use the existing display name or fallback to email
-                displayUsername = userCredential.user.displayName || userCredential.user.email || 'User';
-
+                userCredential = await auth.signInWithEmailAndPassword(usernameInput, passwordInput);
             } else {
-                // Registration logic: Validate name fields
                 if (passwordInput.length < 6) {
                     setMessage('Password must be at least 6 characters long.');
                     setLoading(false);
                     return;
                 }
-                if (!firstName || !lastName) {
-                    setMessage('Please enter both First Name and Last Name.');
-                    setLoading(false);
-                    return;
-                }
-
-                // 1. Create User
-                userCredential = await auth.createUserWithEmailAndPassword(emailInput, passwordInput);
-
-                // 2. Set Display Name
-                displayUsername = `${firstName} ${lastName}`.trim();
-
-                await userCredential.user.updateProfile({
-                    displayName: displayUsername
-                });
+                userCredential = await auth.createUserWithEmailAndPassword(usernameInput, passwordInput);
             }
 
             const user = userCredential.user;
@@ -588,7 +413,7 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
 
             setAuthData({
                 isAuthenticated: true,
-                username: displayUsername,
+                username: user.displayName || user.email || 'User',
                 userId: user.uid,
                 token: idToken,
             });
@@ -612,6 +437,9 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
         color: colors.textPrimary,
         border: `1px solid ${colors.borderColor}`,
         textAlign: 'center',
+
+        position: 'relative', // ADDED for theme toggle positioning
+
         transform: loading ? 'scale(0.98)' : 'scale(1)',
         transition: 'transform 0.3s ease-in-out'
     };
@@ -629,8 +457,8 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
                 <form onSubmit={handlePasswordReset}>
                     <input
                         type="email"
-                        value={emailInput}
-                        onChange={(e) => setEmailInput(e.target.value)}
+                        value={usernameInput}
+                        onChange={(e) => setUsernameInput(e.target.value)}
                         placeholder="Enter your Email"
                         required
                         style={{
@@ -663,53 +491,11 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
         // Standard Login/Register Form
         return (
             <form onSubmit={handleSubmit}>
-
-                {/* --- Name Fields (Only for Registration) --- */}
-                {!isLogin && (
-                    <div style={{ display: 'flex', gap: '10px' }}>
-                        <input
-                            type="text"
-                            value={firstName}
-                            onChange={(e) => setFirstName(e.target.value)}
-                            placeholder="First Name"
-                            required
-                            style={{
-                                ...baseInputStyle,
-                                width: '50%',
-                                backgroundColor: colors.answerBg,
-                                color: colors.textPrimary,
-                                border: `1px solid ${colors.borderColor}`,
-                            }}
-                            onFocus={(e) => e.target.style.boxShadow = inputFocusStyle.boxShadow}
-                            onBlur={(e) => e.target.style.boxShadow = 'none'}
-                            disabled={!firebaseLoaded}
-                        />
-                        <input
-                            type="text"
-                            value={lastName}
-                            onChange={(e) => setLastName(e.target.value)}
-                            placeholder="Last Name"
-                            required
-                            style={{
-                                ...baseInputStyle,
-                                width: '50%',
-                                marginBottom: '15px',
-                                backgroundColor: colors.answerBg,
-                                color: colors.textPrimary,
-                                border: `1px solid ${colors.borderColor}`,
-                            }}
-                            onFocus={(e) => e.target.style.boxShadow = inputFocusStyle.boxShadow}
-                            onBlur={(e) => e.target.style.boxShadow = 'none'}
-                            disabled={!firebaseLoaded}
-                        />
-                    </div>
-                )}
-
                 <input
                     type="email"
-                    value={emailInput}
-                    onChange={(e) => setEmailInput(e.target.value)}
-                    placeholder="Email Address"
+                    value={usernameInput}
+                    onChange={(e) => setUsernameInput(e.target.value)}
+                    placeholder="Email"
                     required
                     style={{
                         ...baseInputStyle,
@@ -772,7 +558,7 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
                         marginTop: '10px'
                     }}
                 >
-                    {loading ? (isLogin ? 'Signing in...' : 'Registering... ') : isLogin ? 'Sign In' : 'Sign Up'}
+                    {loading ? (isLogin ? 'Signing in...' : 'Registering...') : isLogin ? 'Sign In' : 'Sign Up'}
                 </button>
             </form>
         );
@@ -781,6 +567,33 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
 
     return (
         <div style={cardStyle}>
+            {/* --- ADDED: THEME TOGGLE BUTTON --- */}
+            <button
+                onClick={toggleTheme}
+                style={{
+                    position: 'absolute',
+                    top: '20px',
+                    right: '20px',
+                    background: colors.answerBg,
+                    border: `1px solid ${colors.borderColor}`,
+                    color: colors.textPrimary,
+                    borderRadius: '50%',
+                    width: '40px',
+                    height: '40px',
+                    cursor: 'pointer',
+                    fontSize: '1.2em',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 2
+                }}
+                aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+            >
+                {isDark ? '☀️' : '🌙'}
+            </button>
+            {/* --- END: THEME TOGGLE BUTTON --- */}
+
+
             <h1 style={{ color: colors.accentColor, fontSize: '2em', marginBottom: '10px' }}>
                 Verbatim AI
             </h1>
@@ -796,16 +609,9 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
             )}
             {!resetMode && (
                 <div style={{ marginBottom: '20px', pointerEvents: firebaseLoaded ? 'auto' : 'none', opacity: firebaseLoaded ? 1 : 0.5 }}>
-
-                    {/* --- FIX: Only one call to SocialLoginButton to remove duplicates --- */}
-                    <SocialLoginButton provider="all" colors={colors} setLoading={setLoading} setAuthData={setAuthData} setMessage={setMessage} firebaseLoaded={firebaseLoaded} setPendingAuthData={setPendingAuthData} setPageMode={setPageMode} />
-
-                    {/* --- DUPLICATE CALLS REMOVED ---
-                    <SocialLoginButton provider="google" colors={colors} setLoading={setLoading} setAuthData={setAuthData} setMessage={setMessage} firebaseLoaded={firebaseLoaded} setPendingAuthData={setPendingAuthData} setPageMode={setPageMode} />
-                    <SocialLoginButton provider="microsoft" colors={colors} setLoading={setLoading} setAuthData={setAuthData} setMessage={setMessage} firebaseLoaded={firebaseLoaded} setPendingAuthData={setPendingAuthData} setPageMode={setPageMode} />
-                    */}
-
-                    {/* Microsoft login button removed */}
+                    <SocialLoginButton provider="github" colors={colors} setLoading={setLoading} setAuthData={setAuthData} setMessage={setMessage} firebaseLoaded={firebaseLoaded} />
+                    <SocialLoginButton provider="google" colors={colors} setLoading={setLoading} setAuthData={setAuthData} setMessage={setMessage} firebaseLoaded={firebaseLoaded} />
+                    {/* REMOVED Microsoft Button */}
                     <div style={{ margin: '20px 0', fontSize: '0.9em', color: colors.textSecondary, position: 'relative' }}>
                         <div style={{ content: '""', position: 'absolute', top: '50%', left: 0, right: 0, borderTop: `1px solid ${colors.borderColor}` }}></div>
                         <span style={{ backgroundColor: colors.bgSecondary, padding: '0 10px', position: 'relative', zIndex: 1 }}>OR</span>
@@ -829,7 +635,7 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
                     onClick={() => {
                         setResetMode(false);
                         setMessage('');
-                        setEmailInput('');
+                        setUsernameInput('');
                     }}
                     style={{
                         ...baseButtonStyle,
@@ -849,10 +655,8 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
                     onClick={() => {
                         setIsLogin(prev => !prev);
                         setMessage('');
-                        setEmailInput('');
+                        setUsernameInput('');
                         setPasswordInput('');
-                        setFirstName('');
-                        setLastName('');
                     }}
                     style={{
                         ...baseButtonStyle,
@@ -974,7 +778,7 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
         if (isAuthenticated && token) {
             fetchFiles();
         }
-    }, [isAuthenticated, token, userId]);
+    }, [isAuthenticated, token, fetchFiles]);
 
     return (
         <div style={{
@@ -1079,15 +883,12 @@ function App() {
     const [userId, setUserId] = useState(null);
     const [token, setToken] = useState(null);
     const [firebaseLoaded, setFirebaseLoaded] = useState(false); // New state for script loading
-    // NEW STATE: Holds auth data temporarily after social login, before consent
-    const [pendingAuthData, setPendingAuthData] = useState(null);
 
     // DUAL FILE UPLOAD STATE
     const [notesFile, setNotesFile] = useState(null);
     const [paperFile, setPaperFile] = useState(null);
 
     // CRITICAL NEW STATE FOR ACTIVE FILE
-    // FIX: Changed default value to null so no file name displays unless uploaded.
     const [activeNotesFileName, setActiveNotesFileName] = useState(null);
 
     // DUAL MESSAGE STATE
@@ -1180,14 +981,14 @@ function App() {
             if (user) {
                 const idToken = await user.getIdToken();
                 setIsAuthenticated(true);
-                // Use displayName if available, otherwise fall back to email
                 setUsername(user.displayName || user.email || 'User');
                 setUserId(user.uid);
                 setToken(idToken);
-                // FIX: Removed the hardcoded default file name fallback here.
-                // We rely on the File Manager data to determine the active file name.
+                // In a real app, we would fetch the active file name from the backend here.
+                // For now, we set a default/placeholder or rely on a successful upload.
+                setActiveNotesFileName(prevState => prevState || 'Operating_Systems_Practice_Questions.pdf');
 
-                if (pageMode === 'login' || pageMode === 'register' || pageMode === 'consent_display') {
+                if (pageMode === 'login' || pageMode === 'register') {
                     setPageMode('tool');
                 }
             } else {
@@ -1401,19 +1202,8 @@ function App() {
                     setUserId={setUserId}
                     setToken={setToken}
                     firebaseLoaded={firebaseLoaded}
-                    setPendingAuthData={setPendingAuthData}
-                />
-            ) : pageMode === 'consent_display' && pendingAuthData ? (
-                <ConsentDisplayPage
-                    colors={colors}
-                    pendingAuthData={pendingAuthData}
-                    setAuthData={({ isAuthenticated, username, userId, token }) => {
-                        setIsAuthenticated(isAuthenticated);
-                        setUsername(username);
-                        setUserId(userId);
-                        setToken(token);
-                    }}
-                    setPageMode={setPageMode}
+                    toggleTheme={toggleTheme} // <-- PROP ADDED
+                    isDark={isDark}             // <-- PROP ADDED
                 />
             ) : pageMode === 'about' ? (
                 <AboutPage colors={colors} setPageMode={setPageMode} />
@@ -1449,7 +1239,7 @@ function App() {
                                     onClick={() => setPageMode('file_manager')}
                                     style={{
                                         ...baseButtonStyle,
-                                        padding: '8px 8px',
+                                        padding: '8px 15px',
                                         backgroundColor: colors.accentColor,
                                         color: 'white',
                                         fontWeight: '500'
