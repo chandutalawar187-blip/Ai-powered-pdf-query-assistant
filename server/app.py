@@ -16,7 +16,7 @@ import json
 import uuid
 from datetime import datetime
 from functools import wraps
-import concurrent.futures  # --- NEW: Import for parallel processing ---
+import concurrent.futures  # Import for parallel processing
 
 # --- CRITICAL FIX: Load environment variables from .env file ---
 load_dotenv()
@@ -780,8 +780,8 @@ def handle_query():
         })
 
     else:
-        # --- MODE 3: VERBATIM EXTRACTION WITH SILENT GOOGLE CONFIRMATION ---
-        mode = "VERBATIM_CONFIRMED_SILENT"
+        # --- MODE 3: VERBATIM EXTRACTION (NO GOOGLE) ---
+        mode = "VERBATIM"  # --- MODIFIED: Renamed mode
 
         # 1. Universal Cleaning: Remove instructional fluff words only
         fluff_words = ['name the', 'broad categories of', 'explain them briefly', 'the four', 'and', 'for', 'marks',
@@ -795,10 +795,10 @@ def handle_query():
         context = "\n---\n".join(relevant_chunks)
         mode_info = f"Verbatim Extraction Mode (Using {len(relevant_chunks)} chunks)"
 
-        # --- HYPER-STRICT EXTRACTION INSTRUCTION ---
+        # --- HYPER-STRICT EXTRACTION INSTRUCTION (MODIFIED) ---
+        # --- Removed all mentions of Google Search ---
         system_instruction = (
             "You are a MUTE, Document-Bound Extraction Specialist. Your ONLY source of knowledge is the CONTEXT. "
-            "You MUST use the Google Search tool for confirmation, but your final answer MUST ONLY be sourced from the CONTEXT provided.\n"
             "RULES:\n"
             "1. **MUST BE VERBATIM:** The entire output MUST be copied EXACTLY from the CONTEXT. Do not reword, summarize, or add any commentary.\n"
             "2. **OUTPUT FORMAT:** The response MUST be the exact quote(s). Return all sentences/paragraphs necessary to provide the full explanation.\n"
@@ -813,15 +813,15 @@ def handle_query():
                 model='gemini-2.5-flash',
                 contents=prompt,
                 config={
-                    "system_instruction": system_instruction,
-                    "tools": [{"google_search": {}}]  # CRITICAL: Re-enabling Google Search Tool
+                    "system_instruction": system_instruction
+                    # --- FIX: REMOVED THE "tools" KEY ENTIRELY ---
                 }
             )
             answer_text = response.text
         except APIError as e:
             answer_text = f"API FAILED (QUOTA/KEY): {str(e)[:100]}..."
             mode = "ERROR"
-            mode_info = f"VERBATIM_CONFIRMED_SILENT (RAG failed to access API)"
+            mode_info = f"VERBATIM (RAG failed to access API)"
 
     # --- 5. FINISH & RETURN RESPONSE ---
 
@@ -832,7 +832,7 @@ def handle_query():
     image_data = None
 
     # Image Detection (now checks the final answer text)
-    if notes_pdf_path and (mode == "VERBATIM_CONFIRMED_SILENT" or mode == "VERBATIM"):
+    if notes_pdf_path and (mode == "VERBATIM"):  # --- MODIFIED: Checked for new mode name
         try:
             page_match_raw = re.search(r'\[FIG:Page\s*(\d+)\]', answer_text)
             if page_match_raw:
@@ -847,6 +847,99 @@ def handle_query():
         "sources": mode_info,
         "mode": mode,
         "image_data": image_data
+    })
+
+
+# --- MODIFIED ENDPOINT FOR GOOGLE-ONLY MCQ SOLVING (Now with RAG-gate) ---
+@app.route('/google-solve', methods=['POST'])
+@verify_firebase_token  # PROTECTED
+def handle_google_solve():
+    user_id = request.user_id  # We get this to verify the user
+    data = request.json
+    question = data.get('question', '').strip()
+
+    if not client:
+        return jsonify({"error": "AI client is not initialized. Check API Key."}), 500
+
+    if not question:
+        return jsonify({"error": "No question provided."}), 400
+
+    # --- NEW: RAG-GATE LOGIC ---
+    # We must check for relevance before proceeding to Google.
+    try:
+        session = get_session_data(user_id)
+        document_text_chunks = session.get('document_text_chunks', [])
+
+        if not document_text_chunks:
+            # If they have no PDF uploaded, we can't check for relevance.
+            # Block the query.
+            return jsonify({"error": "Please upload a relevant PDF before using the Google solve feature."}), 400
+
+        # Use the same keyword cleaning as the main /query endpoint
+        lower_q = question.lower()
+        fluff_words = ['name the', 'broad categories of', 'explain them briefly', 'the four', 'and', 'for', 'marks',
+                       'briefly', 'neat diagram', 'with a', 'explain the', 'following the', 'model', 'hosts',
+                       'communication', 'what is', 'what are', 'please explain', 'describe', 'definition', 'type of',
+                       'in detail']
+        cleaned_query_parts = lower_q.split()
+        final_keywords = [word for word in cleaned_query_parts if word not in fluff_words and len(word) > 2]
+
+        # Check if any of the keywords exist in the document
+        is_relevant = False
+        if final_keywords:
+            for chunk in document_text_chunks:
+                if any(kw in chunk.lower() for kw in final_keywords):
+                    is_relevant = True
+                    break
+        else:
+            # If no keywords (e.g., "explain"), just check for the raw question
+            if any(lower_q in chunk.lower() for chunk in document_text_chunks):
+                is_relevant = True
+
+        if not is_relevant:
+            print(f"Google solve blocked: Question '{question}' not relevant to PDF.")
+            return jsonify(
+                {"error": "This question does not appear to be related to the content of your uploaded PDF."}), 400
+
+    except Exception as e:
+        print(f"Error during RAG-gate check: {e}")
+        # Fail safe: if the check fails, just return an error
+        return jsonify({"error": "Could not verify question relevance."}), 500
+    # --- END: RAG-GATE LOGIC ---
+
+    # If the check above passed, we proceed to Google Search.
+    print(f"RAG-gate passed. Proceeding to Google Search for: '{question}'")
+
+    # This is a general-purpose, helpful-expert prompt.
+    GOOGLE_SOLVE_INSTRUCTION = (
+        "You are an expert, helpful Q&A assistant. Your primary goal is to answer the user's question accurately and concisely. "
+        "You MUST use the Google Search tool to find the most current and correct information. "
+        "If the question is a Multiple Choice Question (MCQ), state the correct answer and provide a brief explanation for why it is correct. "
+        "Do not mention the PDF or any notes."
+    )
+
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=question,  # We send the question directly
+            config={
+                "system_instruction": GOOGLE_SOLVE_INSTRUCTION,
+                "tools": [{"google_search": {}}]  # --- We ONLY use Google Search here ---
+            }
+        )
+        answer_text = response.text
+
+    except APIError as e:
+        answer_text = f"API FAILED (QUOTA/KEY): {str(e)[:100]}..."
+    except Exception as e:
+        answer_text = f"An unknown error occurred: {str(e)}"
+
+    # Successful response
+    return jsonify({
+        "answer": answer_text,
+        "sources": "Answer generated using Google Search.",
+        "mode": "GOOGLE_SOLVE",
+        "image_data": None
     })
 
 

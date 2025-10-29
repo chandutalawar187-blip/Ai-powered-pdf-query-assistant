@@ -136,10 +136,12 @@ const markdownTableToHtml = (markdown, isDark) => {
 
     if (lines.length < 2) return markdown;
 
-    // The backend is instructed to output 'Parameter', 'IoT', and 'CPS'.
-    const headerLine = lines[0].split('|').filter(h => h.trim()).map(h => `<th style="background-color: ${tableStyles.thBg}; color: ${tableStyles.thText}; padding: 10px; border: 1px solid ${tableStyles.tdBorder}; text-align: left;">${h.trim().replace('Parameter', 'Parameter (Page(s))')}</th>`).join('');
+    // --- DYNAMIC HEADER FIX ---
+    // This code was already correct and handles dynamic headers perfectly.
+    const headerLine = lines[0].split('|').filter(h => h.trim()).map(h => `<th style="background-color: ${tableStyles.thBg}; color: ${tableStyles.thText}; padding: 10px; border: 1px solid ${tableStyles.tdBorder}; text-align: left;">${h.trim()}</th>`).join('');
 
     const header = headerLine ? `<thead><tr>${headerLine}</tr></thead>` : '';
+    // --- END DYNAMIC HEADER FIX ---
 
     const bodyLines = lines.slice(2);
 
@@ -259,12 +261,10 @@ const SocialLoginButton = ({ provider, colors, setLoading, setAuthData, setMessa
     const iconMap = {
         google: 'Google',
         github: 'GitHub',
-        // microsoft: 'Microsoft', // REMOVED
     };
     const colorMap = {
         google: '#DB4437', // Red
         github: '#24292e', // Dark Gray/Black
-        // microsoft: '#00A4EF', // Blue // REMOVED
     };
 
     const handleClick = async () => {
@@ -282,7 +282,6 @@ const SocialLoginButton = ({ provider, colors, setLoading, setAuthData, setMessa
                 case 'github':
                     providerInstance = new window.firebase.auth.GithubAuthProvider();
                     break;
-                // REMOVED Microsoft Case
                 default:
                     throw new Error("Unsupported provider");
             }
@@ -875,7 +874,7 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
 function App() {
     // Global State for UI
     const [theme, setTheme] = useState('light');
-    const [pageMode, setPageMode] = useState('login');
+    const [pageMode, setPageMode] =useState('login');
 
     // AUTH STATE
     const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -986,15 +985,8 @@ function App() {
                 setToken(idToken);
 
                 // --- ADDED: SERVER WAKE-UP PING ---
-                // This request forces the Render server to "wake up"
-                // (run its start command) if it's currently suspended.
-                // We send this silent request at login so the server
-                // is ready *before* the user tries to upload.
                 try {
                     console.log('Sending wake-up ping to server...');
-                    // We use the '/files' endpoint as it's a lightweight,
-                    // protected GET request. We don't need the response,
-                    // just the act of making the call is enough.
                     const response = await fetch(`${API_URL}/files`, {
                         method: 'GET',
                         headers: { 'Authorization': `Bearer ${idToken}` },
@@ -1003,8 +995,6 @@ function App() {
                     if (response.ok) {
                         console.log('Server is awake and responded.');
                     } else {
-                        // This might happen if the token is briefly invalid,
-                        // but the server will still wake up.
                         console.warn('Server wake-up ping failed or returned an error.');
                     }
                 } catch (error) {
@@ -1126,12 +1116,16 @@ function App() {
 
 
     // --- QUERY HANDLER (UPDATED to use Token) ---
+    // This is the PDF-ONLY query
     const handleQuery = async (e) => {
         e.preventDefault();
-        const canQuery = isAuthenticated && activeNotesFileName && token; // --- FIX: Removed redundant userId check
+        const canQuery = isAuthenticated && activeNotesFileName && token && question.trim();
         if (queryLoading || isProcessing || !canQuery) {
              if (!activeNotesFileName) {
                  setNotesMessage('Please upload or set an active Notes PDF first.');
+             }
+             if (!question.trim()) {
+                setAnswer('Please enter a question.');
              }
              return;
         }
@@ -1167,9 +1161,53 @@ function App() {
         }
     };
 
+    // --- NEW: GOOGLE SOLVE HANDLER ---
+    // This is the GOOGLE-ONLY query for MCQs
+    const handleGoogleSolve = async (e) => {
+        e.preventDefault();
+        const canQuery = isAuthenticated && token && question.trim();
+        if (queryLoading || isProcessing || !canQuery) {
+             if (!question.trim()) {
+                setAnswer('Please enter a question to solve.');
+             }
+            return;
+        }
+
+        setQueryLoading(true); setAnswer(''); setSources(''); setMode(''); setFetchedImage(null);
+
+        try {
+            const response = await fetch(`${API_URL}/google-solve`, { // --- Calls the new endpoint
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ question }),
+            });
+
+            const data = await response.json();
+
+            if (response.ok) {
+                setAnswer(data.answer);
+                setSources(data.sources || "Google Search");
+                setMode(data.mode || "GOOGLE_SOLVE");
+                setFetchedImage(null); // Google solve won't return images
+            } else if (response.status === 401) {
+                setAnswer('Unauthorized. Please log in.');
+                handleLogout(); // Force logout on auth failure
+            } else {
+                setAnswer(`Query Error: ${data.error}`);
+                setSources(data.sources || '');
+                setMode('ERROR');
+            }
+        } catch (error) {
+            setAnswer('Network Error: Could not connect to backend server.'); setSources(''); setMode('ERROR');
+        } finally {
+            setQueryLoading(false);
+        }
+    };
+
+
     const renderAnswerContent = () => {
         if (queryLoading) {
-            return <p style={{ color: colors.accentColor }}>Searching for the exact phrase...</p>;
+            return <p style={{ color: colors.accentColor }}>Searching...</p>; // --- MODIFIED: More generic message
         }
         if (!answer) {
             return <p style={{ color: colors.textSecondary }}>Ask a question to begin.</p>;
@@ -1205,14 +1243,28 @@ function App() {
             return <p style={{ color: 'red', fontWeight: 'bold' }}>{answer}</p>;
         }
 
+        // --- NEW: Handle GOOGLE_SOLVE mode ---
+        // We can just render it the same as a VERBATIM answer
+        if (mode === 'VERBATIM' || mode === 'GOOGLE_SOLVE') {
+            return (
+                <p style={{
+                    whiteSpace: 'pre-wrap',
+                    fontWeight: '500',
+                    color: colors.textPrimary,
+                    textAlign: 'justify',
+                    fontSize: '1.05em',
+                    lineHeight: '1.6'
+                }}>
+                    {answer}
+                </p>
+            );
+        }
+
+        // Fallback for any other mode
         return (
             <p style={{
                 whiteSpace: 'pre-wrap',
-                fontWeight: '500',
                 color: colors.textPrimary,
-                textAlign: 'justify',
-                fontSize: '1.05em',
-                lineHeight: '1.6'
             }}>
                 {answer}
             </p>
@@ -1402,23 +1454,51 @@ function App() {
                     {/* --------------------------- */}
                     <div style={sectionStyle}>
                         <h2 style={titleStyle}>2. Ask a Question</h2>
-                        <form onSubmit={handleQuery}>
+                        <form> {/* --- MODIFIED: Removed onSubmit from form tag --- */}
                             <input
                                 type="text"
                                 value={question}
                                 onChange={(e) => setQuestion(e.target.value)}
-                                placeholder={`Querying notes file: ${activeNotesFileName || '---'}`}
+                                placeholder={
+                                    !isAuthenticated ? 'Please log in to ask a question' :
+                                    !activeNotesFileName ? 'Please upload a Notes PDF first' :
+                                    `Querying notes file: ${activeNotesFileName}`
+                                }
                                 required
                                 style={{...baseInputStyle, backgroundColor: colors.answerBg, color: colors.textPrimary}}
-                                disabled={isProcessing || !activeNotesFileName || !isAuthenticated}
+                                disabled={isProcessing || !isAuthenticated} // --- MODIFIED: Only disable if processing
                             />
-                            <button
-                                type="submit"
-                                disabled={queryLoading || isProcessing || !activeNotesFileName || !isAuthenticated}
-                                style={{...baseQueryButtonStyle, backgroundColor: colors.successBg, color: 'white'}}
-                            >
-                                {queryLoading ? 'Thinking...' : 'Get Answer'}
-                            </button>
+
+                            {/* --- NEW: Button Container --- */}
+                            <div style={{ display: 'flex', gap: '10px' }}>
+                                <button
+                                    type="button" // --- MODIFIED: Changed to type="button"
+                                    onClick={handleQuery} // --- MODIFIED: Use onClick
+                                    disabled={queryLoading || isProcessing || !activeNotesFileName || !isAuthenticated}
+                                    style={{
+                                        ...baseQueryButtonStyle,
+                                        backgroundColor: colors.successBg,
+                                        color: 'white',
+                                        flex: 2 // Make this the primary button
+                                    }}
+                                >
+                                    {queryLoading ? 'Thinking...' : 'Get Answer (from PDF)'}
+                                </button>
+
+                                <button
+                                    type="button" // --- NEW: Secondary Button ---
+                                    onClick={handleGoogleSolve} // --- NEW: Calls new handler
+                                    disabled={queryLoading || isProcessing || !isAuthenticated}
+                                    style={{
+                                        ...baseQueryButtonStyle,
+                                        backgroundColor: colors.buttonBg, // Use accent color
+                                        color: 'white',
+                                        flex: 1 // Make this the secondary button
+                                    }}
+                                >
+                                    {queryLoading ? 'Thinking...' : 'Solve (Google)'}
+                                </button>
+                            </div>
                         </form>
 
                         {/* --- ANSWER AND IMAGE DISPLAY --- */}
@@ -1426,7 +1506,11 @@ function App() {
                             <div style={{ flex: fetchedImage ? 2 : 1, minWidth: fetchedImage ? '400px' : 'auto' }}>
                                 <h3 style={{ color: colors.textPrimary, borderBottom: `1px dashed ${colors.borderColor}`, paddingBottom: '5px' }}>
                                     AI Answer: <span style={{fontSize: '0.8em', color: colors.textSecondary}}>
-                                        ({mode === 'VERBATIM' ? 'Verbatim Extraction' : mode === 'FULL_TEXT' ? 'Full Text Output' : mode})
+                                        ({mode === 'VERBATIM' ? 'Verbatim Extraction (PDF)' :
+                                          mode === 'GOOGLE_SOLVE' ? 'Google Search Answer' :
+                                          mode === 'FULL_TEXT' ? 'Full Text Output (PDF)' :
+                                          mode === 'COMPARISON' ? 'Comparison Table (PDF)' :
+                                          mode})
                                     </span>
                                 </h3>
                                 <div style={answerBoxStyle}>{renderAnswerContent()}</div>
