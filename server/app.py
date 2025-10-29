@@ -16,6 +16,7 @@ import json
 import uuid
 from datetime import datetime
 from functools import wraps
+import concurrent.futures  # --- NEW: Import for parallel processing ---
 
 # --- CRITICAL FIX: Load environment variables from .env file ---
 load_dotenv()
@@ -191,12 +192,15 @@ def extract_and_crop_image(pdf_path, page_number):
 
 
 def perform_ocr_on_page(pdf_path, page_index, client):
-    """Renders a PDF page to an image and uses Gemini Vision for OCR."""
+    """
+    Renders a PDF page to an image and uses Gemini Vision for OCR.
+    This function is thread-safe as it opens and closes its own doc.
+    """
     doc = None
     try:
         doc = fitz.open(pdf_path)
         page = doc[page_index]
-        zoom_matrix = fitz.Matrix(3, 3)
+        zoom_matrix = fitz.Matrix(3, 3)  # High-res for better OCR
         pix = page.get_pixmap(matrix=zoom_matrix)
         img_bytes = pix.tobytes(output="png")
 
@@ -213,14 +217,15 @@ def perform_ocr_on_page(pdf_path, page_index, client):
         return response.text if response.text else ""
     except Exception as e:
         print(f"GEMINI OCR FAILED on page {page_index + 1}: {e}")
-        return ""
+        return ""  # Return empty string on failure
     finally:
         if doc and not doc.is_closed:
             doc.close()
 
 
+# --- MODIFIED: This function now performs parallel OCR ---
 def extract_text_and_chunk(pdf_path, user_id, file_id, is_notes_file=True):
-    """Extracts text, using OCR fallback, and updates the user's session data/cache."""
+    """Extracts text, using parallel OCR fallback, and updates the user's session data/cache."""
 
     session = get_session_data(user_id)
     source_label = "[NOTES]" if is_notes_file else "[PAPER]"
@@ -242,24 +247,59 @@ def extract_text_and_chunk(pdf_path, user_id, file_id, is_notes_file=True):
         try:
             reader = pypdf.PdfReader(pdf_path)
             num_pages = len(reader.pages)
-            raw_text_storage = []
 
+            # --- Triage Phase ---
+            # We'll store text by page index {0: "text...", 1: "text..."}
+            raw_text_storage = {}
+            # We'll store a list of page indices that need OCR
+            pages_to_ocr_indices = []
+
+            print(f"Triage Phase: Scanning {num_pages} pages for {pdf_filename}...")
             for i in range(num_pages):
                 page = reader.pages[i]
                 text = page.extract_text()
 
-                # Heuristic Check for Handwritten/Scanned PDF (if text is too short)
+                # Heuristic Check
                 if len(text) < 100 and client:
-                    print(f"ATTEMPTING OCR on Page {i + 1} (Sparse text detected)")
-                    text = perform_ocr_on_page(pdf_path, i, client)  # Run Gemini OCR
+                    pages_to_ocr_indices.append(i)
+                    # Add a placeholder; we'll fill this during the parallel phase
+                    raw_text_storage[i] = ""
+                else:
+                    raw_text_storage[i] = text if text else f"[NO READABLE TEXT ON PAGE {i + 1}]"
 
-                if not text: text = f"[NO READABLE TEXT ON PAGE {i + 1}]"
+            print(f"Triage Complete: {len(pages_to_ocr_indices)} pages flagged for OCR.")
 
-                raw_text_storage.append(text)
+            # --- Parallel OCR Phase ---
+            if pages_to_ocr_indices:
+                # This wrapper function will be called by each thread
+                def ocr_task(page_index):
+                    # Calls the helper function
+                    ocr_text = perform_ocr_on_page(pdf_path, page_index, client)
+                    # Return both the index and the text so we can put it in the right place
+                    return page_index, ocr_text
+
+                # Use a thread pool to run OCR tasks in parallel
+                # We set max_workers to 10 to avoid overwhelming the API
+                # and to be respectful of Render's free tier limits.
+                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                    print(f"Starting parallel OCR for {len(pages_to_ocr_indices)} pages...")
+
+                    # 'map' automatically runs tasks in parallel and blocks
+                    # until all are complete.
+                    results = executor.map(ocr_task, pages_to_ocr_indices)
+
+                    # --- Collate Results ---
+                    for page_index, ocr_text in results:
+                        raw_text_storage[
+                            page_index] = ocr_text if ocr_text else f"[OCR FAILED ON PAGE {page_index + 1}]"
+
+                print("Parallel OCR complete.")
 
             # 2. Chunking based on retrieved text (OCR or Native)
             unlabeled_chunks = []  # For caching
-            for page_index, text in enumerate(raw_text_storage):
+
+            # Iterate through the sorted pages to maintain document order
+            for page_index, text in sorted(raw_text_storage.items()):
                 page_number = page_index + 1
                 chunk_size = 1000
                 for j in range(0, len(text), chunk_size):
@@ -276,14 +316,10 @@ def extract_text_and_chunk(pdf_path, user_id, file_id, is_notes_file=True):
 
         except Exception as e:
             print(f"Error during PDF processing/OCR: {e}")
+            traceback.print_exc()
             return False, 0
 
-    # 4. Update Global Session State
-
-    # NOTE: The 'notes' context clearing happens in the setter endpoints now (upload and set-active).
-    # This function should only append the specific file's context.
-    # We clear the document_text_chunks in the functions that call this one.
-
+    # 4. Update Global Session State (Unchanged)
     return True, len(new_chunks)
 
 
@@ -531,6 +567,7 @@ def handle_upload_logic(file, user_id, is_notes_file):
     file.save(file_path)
 
     # --- Process and create file metadata ---
+    # This function is now much faster for OCR-heavy files
     success, count = extract_text_and_chunk(file_path, user_id, file_id, is_notes_file=is_notes_file)
 
     if success:
@@ -718,7 +755,7 @@ def handle_query():
             f"3. **CONTENT PRIORITY:** Extract the distinct comparison points from the CONTEXT and place them directly into the appropriate cell. **You MUST use complete, verbatim phrases or sentences** from the CONTEXT for the '{topic_a}' and '{topic_b}' columns. Do NOT summarize, rephrase, or consolidate the content; break the source sentences into the table cells as directly as possible.\n"
             f"4. **CITATION (CRITICAL):** Append the citation string {{page_ref_string}} at the very end of the markdown table on a separate line. The citation must be present.\n"
             "5. **NO QUOTES/INTRO/CLOSING:** Do NOT include any introductory or explanatory text or quotes outside the table and the citation.\n"
-            "6. **FAILURE:** If information for a clear comparison table is not in the context, reply with the exact phrase: 'Insufficient data for a comparison table was found in the document.'")
+            "6. **FAILURE:** If information for a clear comparison table is not in the context, reply with the exact phrase: 'Insufficient data for a comparison table was not found in the document.'")
 
         prompt = f"User Question: {question}\n\nCONTEXT:\n{context}\n\nCITATION STRING TO APPEND: {page_ref_string}"
 
