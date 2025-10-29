@@ -670,6 +670,33 @@ def handle_query():
 
     if is_comparison_request:
         mode = "COMPARISON"
+
+        # --- NEW: Dynamic Topic Extraction ---
+        # Try to find "compare A and B" or "difference between A and B"
+        topic_match = re.search(
+            r'(?:compare|difference between|differentiate|distinguish)\s+(.*?)\s+(?:and|vs\.?|with)\s+(.*)',
+            lower_q,
+            re.IGNORECASE
+        )
+
+        topic_a = "Topic 1"
+        topic_b = "Topic 2"
+
+        if topic_match:
+            try:
+                # Clean up the captured groups
+                raw_a = topic_match.group(1).strip()
+                raw_b = topic_match.group(2).strip()
+
+                # Further clean-up: limit to 3 words and UPPERCASE for the header
+                topic_a = " ".join(raw_a.split()[:3]).upper()
+                topic_b = " ".join(raw_b.split()[:3]).upper()
+            except Exception as e:
+                print(f"Regex topic extraction failed: {e}")
+                # Fallback to default "Topic 1" and "Topic 2" is already set
+        # --- END: Dynamic Topic Extraction ---
+
+        # The keyword logic for RAG retrieval is still useful
         keywords = lower_q.replace('compare', '').replace('difference', '').replace('differentiate', '').replace(
             'between', '').split()
         relevant_chunks = [chunk for chunk in document_text_chunks if any(kw in chunk.lower() for kw in keywords)][:30]
@@ -678,11 +705,20 @@ def handle_query():
         retrieved_pages = sorted(
             list(set([int(chunk.split('[Page ')[1].split(']')[0]) for chunk in relevant_chunks if '[Page ' in chunk])))
         page_ref_string = f" (Sources: Pages {', '.join(map(str, retrieved_pages))})"
-        mode_info = f"Comparison Mode"
 
-        # --- MODIFIED SYSTEM INSTRUCTION TO PREVENT SUMMARIZATION AND FORCE TABLE OUTPUT WITH CORRECT HEADINGS ---
+        # --- MODIFIED: Use dynamic topics in mode_info
+        mode_info = f"Comparison Mode ({topic_a} vs {topic_b})"
+
+        # --- MODIFIED: DYNAMIC SYSTEM INSTRUCTION ---
+        # We now use an f-string to inject the extracted topic names
         system_instruction = (
-            "You are an expert Data Structuring Analyst. Your task is to extract and structure comparison points for the two concepts in the user's question, using ONLY the CONTEXT provided.\n\nRULES:\n1. **STRICT OUTPUT FORMAT:** The entire output MUST be a single Markdown table. Do not output anything that is not part of the table, except the citation.\n2. **TABLE STRUCTURE (CRITICAL):** The table MUST have exactly three columns: 'Parameter', 'IoT', and 'CPS'. Use these exact headings for the data columns.\n3. **CONTENT PRIORITY:** Extract the distinct comparison points from the CONTEXT and place them directly into the appropriate cell. **You MUST use complete, verbatim phrases or sentences** from the CONTEXT for the 'IoT' and 'CPS' columns. Do NOT summarize, rephrase, or consolidate the content; break the source sentences into the table cells as directly as possible.\n4. **CITATION (CRITICAL):** Append the citation string {page_ref_string} at the very end of the markdown table on a separate line. The citation must be present.\n5. **NO QUOTES/INTRO/CLOSING:** Do NOT include any introductory or explanatory text or quotes outside the table and the citation.\n6. **FAILURE:** If information for a clear comparison table is not in the context, reply with the exact phrase: 'Insufficient data for a comparison table was found in the document.'")
+            "You are an expert Data Structuring Analyst. Your task is to extract and structure comparison points for the two concepts in the user's question, using ONLY the CONTEXT provided.\n\nRULES:\n"
+            f"1. **STRICT OUTPUT FORMAT:** The entire output MUST be a single Markdown table. Do not output anything that is not part of the table, except the citation.\n"
+            f"2. **TABLE STRUCTURE (CRITICAL):** The table MUST have exactly three columns: 'Parameter', '{topic_a}', and '{topic_b}'. Use these exact headings for the data columns.\n"
+            f"3. **CONTENT PRIORITY:** Extract the distinct comparison points from the CONTEXT and place them directly into the appropriate cell. **You MUST use complete, verbatim phrases or sentences** from the CONTEXT for the '{topic_a}' and '{topic_b}' columns. Do NOT summarize, rephrase, or consolidate the content; break the source sentences into the table cells as directly as possible.\n"
+            f"4. **CITATION (CRITICAL):** Append the citation string {{page_ref_string}} at the very end of the markdown table on a separate line. The citation must be present.\n"
+            "5. **NO QUOTES/INTRO/CLOSING:** Do NOT include any introductory or explanatory text or quotes outside the table and the citation.\n"
+            "6. **FAILURE:** If information for a clear comparison table is not in the context, reply with the exact phrase: 'Insufficient data for a comparison table was found in the document.'")
 
         prompt = f"User Question: {question}\n\nCONTEXT:\n{context}\n\nCITATION STRING TO APPEND: {page_ref_string}"
 
@@ -701,7 +737,7 @@ def handle_query():
         # Return immediately if it was a comparison request (FIX APPLIED HERE)
         return jsonify({
             "answer": answer_text,
-            "sources": mode_info,
+            "sources": mode_info,  # --- MODIFIED: Send dynamic mode_info
             "mode": mode,
             "image_data": None
         })

@@ -689,7 +689,7 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
 
         try {
             // Send token in Authorization header
-            const response = await fetch(`${API_URL}/files?userId=${userId}`, {
+            const response = await fetch(`${API_URL}/files`, { // --- FIX: Removed redundant userId query param
                 method: 'GET',
                 headers: { 'Authorization': `Bearer ${token}` },
             });
@@ -706,7 +706,7 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
         } finally {
             setLoading(false);
         }
-    }, [isAuthenticated, token, userId]);
+    }, [isAuthenticated, token]); // --- FIX: Removed redundant userId dependency
 
     const handleDelete = async (fileId) => {
         if (!window.confirm("Are you sure you want to delete this file? This action cannot be undone.")) {
@@ -721,7 +721,7 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
 
         try {
             // Send token in Authorization header
-            const response = await fetch(`${API_URL}/files/${fileId}?userId=${userId}`, {
+            const response = await fetch(`${API_URL}/files/${fileId}`, { // --- FIX: Removed redundant userId query param
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` },
             });
@@ -754,7 +754,7 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                body: JSON.stringify({ fileId: fileId, userId: userId }),
+                body: JSON.stringify({ fileId: fileId }), // --- FIX: Removed redundant userId from body
             });
 
             const data = await response.json();
@@ -985,11 +985,34 @@ function App() {
                 setUserId(user.uid);
                 setToken(idToken);
 
-                // --- FIX: REMOVED DEFAULT PLACEHOLDER ---
-                // In a real app, we would fetch the active file name from the backend here.
-                // For now, we set it to null on login, user must select one.
+                // --- ADDED: SERVER WAKE-UP PING ---
+                // This request forces the Render server to "wake up"
+                // (run its start command) if it's currently suspended.
+                // We send this silent request at login so the server
+                // is ready *before* the user tries to upload.
+                try {
+                    console.log('Sending wake-up ping to server...');
+                    // We use the '/files' endpoint as it's a lightweight,
+                    // protected GET request. We don't need the response,
+                    // just the act of making the call is enough.
+                    const response = await fetch(`${API_URL}/files`, {
+                        method: 'GET',
+                        headers: { 'Authorization': `Bearer ${idToken}` },
+                    });
+
+                    if (response.ok) {
+                        console.log('Server is awake and responded.');
+                    } else {
+                        // This might happen if the token is briefly invalid,
+                        // but the server will still wake up.
+                        console.warn('Server wake-up ping failed or returned an error.');
+                    }
+                } catch (error) {
+                    console.error('Network error during server wake-up ping:', error);
+                }
+                // --- END: SERVER WAKE-UP PING ---
+
                 setActiveNotesFileName(null);
-                // --- END FIX ---
 
                 if (pageMode === 'login' || pageMode === 'register') {
                     setPageMode('tool');
@@ -1005,7 +1028,7 @@ function App() {
                 }
             }
         });
-    }, [pageMode, firebaseLoaded]);
+    }, [pageMode, firebaseLoaded]); // Dependencies are correct
 
     useEffect(() => {
         loadFirebaseScripts()
@@ -1056,7 +1079,7 @@ function App() {
     // --- DUAL PDF UPLOAD HANDLERS (UPDATED to use Token) ---
 
     const handleUpload = async (file, type) => {
-        if (!file || !isAuthenticated || !userId || !token) return;
+        if (!file || !isAuthenticated || !token) return; // --- FIX: Removed redundant userId check
 
         const isNotes = type === 'notes';
         const setFileMessage = isNotes ? setNotesMessage : setPaperMessage;
@@ -1067,13 +1090,13 @@ function App() {
 
         const formData = new FormData();
         formData.append('pdf', file);
-        formData.append('userId', userId); // Pass userId for backend state management
+        // --- FIX: Removed redundant formData.append('userId', userId) ---
+        // The backend gets the user ID securely from the token.
 
         try {
             const response = await fetch(uploadEndpoint, {
                 method: 'POST',
                 body: formData,
-                // CRITICAL FIX: Send the ID Token in the Authorization header
                 headers: { 'Authorization': `Bearer ${token}` },
             });
             const data = await response.json();
@@ -1082,7 +1105,6 @@ function App() {
                 setFileMessage(`Success! ${isNotes ? 'Notes' : 'Paper'} processed. ${data.chunks_count} chunks indexed.`);
                 if (isNotes) {
                     setAnswer(''); setSources(''); setMode(''); setFetchedImage(null);
-                    // CRITICAL: Set the active notes filename upon successful new notes upload
                     setActiveNotesFileName(file.name);
                 }
             } else if (response.status === 401) {
@@ -1106,7 +1128,7 @@ function App() {
     // --- QUERY HANDLER (UPDATED to use Token) ---
     const handleQuery = async (e) => {
         e.preventDefault();
-        const canQuery = isAuthenticated && activeNotesFileName && userId && token; // Check activeNotesFileName
+        const canQuery = isAuthenticated && activeNotesFileName && token; // --- FIX: Removed redundant userId check
         if (queryLoading || isProcessing || !canQuery) {
              if (!activeNotesFileName) {
                  setNotesMessage('Please upload or set an active Notes PDF first.');
@@ -1119,9 +1141,8 @@ function App() {
         try {
             const response = await fetch(`${API_URL}/query`, {
                 method: 'POST',
-                // CRITICAL FIX: Send the ID Token in the Authorization header
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify({ question, userId }),
+                body: JSON.stringify({ question }), // --- FIX: Removed redundant userId from body
             });
 
             const data = await response.json();
@@ -1135,7 +1156,6 @@ function App() {
                 setAnswer('Unauthorized. Please log in.');
                 handleLogout(); // Force logout on auth failure
             } else {
-                // This will catch the 429 "Too Many Requests" error from the backend
                 setAnswer(`Query Error: ${data.error}`);
                 setSources(data.sources || '');
                 setMode('ERROR');
@@ -1179,7 +1199,6 @@ function App() {
         }
 
         if (mode === 'ERROR') {
-            // Check for the specific query limit error message
             if (answer.includes("daily query limit")) {
                  return <p style={{ color: 'red', fontWeight: 'bold' }}>{answer}</p>;
             }
@@ -1212,8 +1231,8 @@ function App() {
                     setUserId={setUserId}
                     setToken={setToken}
                     firebaseLoaded={firebaseLoaded}
-                    toggleTheme={toggleTheme} // <-- PROP ADDED
-                    isDark={isDark}             // <-- PROP ADDED
+                    toggleTheme={toggleTheme}
+                    isDark={isDark}
                 />
             ) : pageMode === 'about' ? (
                 <AboutPage colors={colors} setPageMode={setPageMode} />
@@ -1224,7 +1243,7 @@ function App() {
                     colors={colors}
                     setPageMode={setPageMode}
                     isAuthenticated={isAuthenticated}
-                    userId={userId}
+                    userId={userId} // <-- This prop is no longer used by the component but doesn't hurt to pass
                     token={token}
                     activeNotesFileName={activeNotesFileName}
                     setActiveNotesFileName={setActiveNotesFileName}
