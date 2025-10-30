@@ -1397,7 +1397,8 @@ function App() {
                         src={appAnimationData}
                         style={{
                             width: '1200px',
-                            height: '1200px',
+                            maxWidth: '100%',
+                            height: 'auto',
                             border: 'none' // --- FIX: Removed the red debug border ---
                         }}
                     />
