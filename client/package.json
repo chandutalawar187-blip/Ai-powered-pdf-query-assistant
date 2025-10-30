@@ -2,7 +2,6 @@
   "name": "client",
   "version": "0.1.0",
   "private": true,
-  "homepage": "https://chandutalawar187-blip.github.io/Ai-powered-pdf-query-assistant",
   "dependencies": {
     "@capacitor/android": "^7.4.3",
     "@lottiefiles/react-lottie-player": "^3.6.0",
