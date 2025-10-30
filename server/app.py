@@ -124,14 +124,21 @@ def verify_firebase_token(f):
 
 
 # --- INITIAL SETUP ---
-# This tells Flask to use the 'client/build' folder as the static folder
-# --- This is the fix ---
-# We go up one level ('..') from the current file's directory ('server')
-# to find the 'client/build' folder.
+# --- INITIAL SETUP ---
+
+# 1. Calculate the path to the 'client/build' folder
+# This goes UP one level ('..') from 'server' to find 'client/build'
 build_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'client', 'build'))
+
+# 2. Add a print statement for debugging
+# Check your Render logs to see if this path is correct!
+print(f"--- 🚀 Serving static files from: {build_folder} ---")
+
+# 3. Initialize the Flask app with the correct static_folder path
 app = Flask(__name__,
             static_folder=build_folder,
             static_url_path='')
+
 # CRITICAL: Allow credentials to be sent (needed for cookies/session storage)
 CORS(app, supports_credentials=True)
 
