@@ -1226,6 +1226,38 @@ function App() {
         }
     }, [firebaseLoaded, checkAuthStatus]);
 
+    // --- THIS IS THE NEW useEffect HOOK for GitHub Pages ---
+    // This hook runs ONCE on page load to set the pageMode from the URL
+    useEffect(() => {
+        // 1. Check for the redirect query parameter from 404.html
+        const params = new URLSearchParams(window.location.search);
+        const redirectPath = params.get('path'); // Will be 'about', 'privacy', etc.
+
+        let mode = '';
+
+        if (redirectPath) {
+            // If we were redirected, use that path
+            mode = redirectPath.toLowerCase();
+            // Also, clean up the URL bar to remove the query param
+            window.history.replaceState({}, '', '/' + mode);
+        } else {
+            // If no redirect, just read the normal path
+            const path = window.location.pathname.toLowerCase(); // Gets '/about'
+            mode = path.substring(1); // 'about', 'privacy', or ''
+        }
+
+        // 2. Set the pageMode based on the path
+        if (mode === 'about') {
+            setPageMode('about');
+        } else if (mode === 'privacy') {
+            setPageMode('privacy');
+        } else if (mode === 'file_manager') {
+            setPageMode('file_manager');
+        }
+        // If mode is '', the app will default to 'loading'
+        // and let the auth check handle the next step. This is correct.
+
+    }, []); // The empty array [] means this only runs once.
 
     // --- LOGOUT HANDLER (UPDATED for Firebase) ---
     const handleLogout = async () => {
