@@ -1025,14 +1025,39 @@ def handle_google_solve():
         "image_data": None
     })
 
+
+# --- REPLACE your old 'serve' function with this new DEBUG version ---
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve(path):
-    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
-        return send_from_directory(app.static_folder, path)
-    else:
-        return send_from_directory(app.static_folder, 'index.html')
+    # --- 1. Log the incoming request ---
+    print(f"--- DEBUG: serve() called with path: '{path}' ---")
 
+    # --- 2. Log the static folder path it's using ---
+    static_folder_path = app.static_folder
+    print(f"--- DEBUG: app.static_folder is: '{static_folder_path}' ---")
+
+    # --- 3. Check for the requested file (e.g., 'logo.png') ---
+    requested_file_path = os.path.join(static_folder_path, path)
+    file_exists = os.path.exists(requested_file_path)
+    print(f"--- DEBUG: Checking for asset file: '{requested_file_path}' (Exists: {file_exists}) ---")
+
+    if path != "" and file_exists:
+        print(f"--- DEBUG: Serving asset file: '{path}' ---")
+        return send_from_directory(static_folder_path, path)
+    else:
+        # --- 4. Check for index.html (THE IMPORTANT ONE) ---
+        index_path = os.path.join(static_folder_path, 'index.html')
+        index_exists = os.path.exists(index_path)
+        print(f"--- DEBUG: Checking for index.html: '{index_path}' (Exists: {index_exists}) ---")
+
+        if index_exists:
+            print(f"--- DEBUG: Serving 'index.html' for route: '{path}' ---")
+            return send_from_directory(static_folder_path, 'index.html')
+        else:
+            # --- 5. This is the 404 ---
+            print(f"--- FATAL ERROR: 'index.html' NOT FOUND at '{index_path}' ---")
+            return (jsonify({"error": f"index.html not found. Server misconfiguration. Path: {index_path}"}), 404)
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port, threaded=True)
