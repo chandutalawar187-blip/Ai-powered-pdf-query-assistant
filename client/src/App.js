@@ -1,6 +1,10 @@
-// client/src/App.js (FINAL COMPLETE FRONTEND CODE WITH PASSWORD RESET & LOGIN THEME TOGGLE)
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-// import './App.css'; // REMOVED: External CSS is not supported in single-file mandate
+// client/src/App.js (FINAL COMPLETE FRONTEND CODE WITH LOTTIE & SKELETONS)
+import React, { useState, useRef, useEffect, useCallback, Suspense } from 'react';
+import { Player } from '@lottiefiles/react-lottie-player'; // --- Import Lottie Player ---
+
+// --- NEW: IMPORT YOUR LOTTIE JSON FILE DIRECTLY ---
+// We are NOW using this for the 'Thinking' animation
+import appAnimationData from './app.json';
 
 // --- START: FIREBASE INTEGRATION CODE ---
 // NOTE: Replace these with your actual Firebase configuration values
@@ -621,13 +625,12 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
             {/* --- Auth Form --- */}
             {renderAuthForm()}
 
-            <p style={{
-                color: message.includes('Failed') || message.includes('Error') || message.includes('Password') ? 'red' : colors.successBg,
-                fontSize: '0.9em',
-                minHeight: '20px'
-            }}>
-                {message || (!firebaseLoaded ? 'Waiting for Firebase SDK...' : '')}
-            </p>
+            {/* --- MODIFIED: Use AnimatedMessage for login messages --- */}
+            <AnimatedMessage
+                message={message || (!firebaseLoaded ? 'Waiting for Firebase SDK...' : '')}
+                type={message.includes('Failed') || message.includes('Error') || message.includes('Password') ? 'error' : (message.includes('Success') ? 'success' : 'info')}
+                colors={colors}
+            />
 
             {resetMode ? (
                 <button
@@ -674,6 +677,105 @@ const LoginPage = ({ colors, setIsAuthenticated, setUsername, setPageMode, setUs
         </div>
     );
 };
+
+
+// --- NEW: SKELETON LOADING COMPONENTS ---
+
+// Single Skeleton Bar
+const Skeleton = ({ style, colors }) => (
+    <div
+        style={{
+            ...style, // Allows custom width/height
+            backgroundColor: colors.answerBg,
+            borderRadius: '4px',
+            animation: 'shimmer 2s infinite linear',
+        }}
+    />
+);
+
+// --- MODIFIED: This is now just a SKELETON, not the "Thinking" animation ---
+const AnswerSkeleton = ({ colors }) => (
+    <div style={{ width: '100%' }}>
+        <Skeleton style={{ height: '20px', width: '90%', marginBottom: '10px' }} colors={colors} />
+        <Skeleton style={{ height: '20px', width: '100%', marginBottom: '10px' }} colors={colors} />
+        <Skeleton style={{ height: '20px', width: '70%', marginBottom: '10px' }} colors={colors} />
+    </div>
+);
+
+
+// Skeleton for the File Manager Table
+const FileTableSkeleton = ({ colors }) => {
+    const SkeletonRow = () => (
+        <tr style={{ backgroundColor: colors.answerBg }}>
+            <td style={{ padding: '10px', border: `1px solid ${colors.borderColor}` }}>
+                <Skeleton style={{ height: '20px', width: '80%' }} colors={colors} />
+            </td>
+            <td style={{ padding: '10px', border: `1px solid ${colors.borderColor}` }}>
+                <Skeleton style={{ height: '20px', width: '100%' }} colors={colors} />
+            </td>
+            <td style={{ padding: '10px', border: `1px solid ${colors.borderColor}` }}>
+                <Skeleton style={{ height: '20px', width: '50%' }} colors={colors} />
+            </td>
+            <td style={{ padding: '10px', border: `1px solid ${colors.borderColor}` }}>
+                <Skeleton style={{ height: '20px', width: '100%' }} colors={colors} />
+            </td>
+        </tr>
+    );
+    return (
+        <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '15px' }}>
+                <thead>
+                    <tr style={{ backgroundColor: colors.thBg }}>
+                        <th style={{ padding: '10px', border: `1px solid ${colors.tdBorder}`, textAlign: 'left', color: colors.thText }}>Type</th>
+                        <th style={{ padding: '10px', border: `1T'solid ${colors.tdBorder}`, textAlign: 'left', color: colors.thText }}>Filename</th>
+                        <th style={{ padding: '10px', border: `1px solid ${colors.tdBorder}`, textAlign: 'left', color: colors.thText }}>Chunks</th>
+                        <th style={{ padding: '10px', border: `1px solid ${colors.tdBorder}`, textAlign: 'center', color: colors.thText }}>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <SkeletonRow />
+                    <SkeletonRow />
+                    <SkeletonRow />
+                </tbody>
+            </table>
+        </div>
+    );
+};
+
+// --- NEW: ANIMATED MESSAGE COMPONENT ---
+const AnimatedMessage = ({ message, type, colors }) => {
+    if (!message) return null;
+
+    let style = {
+        padding: '12px 18px',
+        borderRadius: '8px',
+        margin: '10px 0',
+        fontSize: '0.9em',
+        animation: 'fadeIn 0.5s ease-out',
+        border: '1px solid',
+    };
+
+    if (type === 'success') {
+        style.backgroundColor = colors.isDark ? '#2f855a' : '#c6f6d5';
+        style.color = colors.isDark ? '#c6f6d5' : '#2f855a';
+        style.borderColor = colors.isDark ? '#38a169' : '#9ae6b4';
+    } else if (type === 'error') {
+        style.backgroundColor = colors.isDark ? '#c53030' : '#fed7d7';
+        style.color = colors.isDark ? '#fed7d7' : '#c53030';
+        style.borderColor = colors.isDark ? '#e53e3e' : '#fbb6b6';
+    } else { // 'info'
+        style.backgroundColor = colors.isDark ? '#2b6cb0' : '#ebf8ff';
+        style.color = colors.isDark ? '#bee3f8' : '#2b6cb0';
+        style.borderColor = colors.isDark ? '#4299e1' : '#bee3f8';
+    }
+
+    return (
+        <div style={style}>
+            {message}
+        </div>
+    );
+};
+
 
 // --- FILE MANAGEMENT COMPONENT (UPDATED for Session Shift) ---
 const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userId, activeNotesFileName, setActiveNotesFileName, setNotesMessage }) => {
@@ -779,6 +881,9 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
         }
     }, [isAuthenticated, token, fetchFiles]);
 
+    // --- MODIFIED: Determine message type ---
+    const messageType = message.includes('Failed') || message.includes('Error') ? 'error' : (message.includes('Success') ? 'success' : 'info');
+
     return (
         <div style={{
             padding: '40px',
@@ -807,12 +912,14 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
                 Back to Query Tool
             </button>
 
-            {message && <p style={{ color: message.includes('Failed') || message.includes('Error') ? 'red' : colors.successBg }}>{message}</p>}
+            {/* --- MODIFIED: Use AnimatedMessage --- */}
+            <AnimatedMessage message={message} type={messageType} colors={colors} />
 
+            {/* --- MODIFIED: Use FileTableSkeleton --- */}
             {loading && !message.includes('Switching') ? (
-                <p style={{color: colors.accentColor}}>Loading files...</p>
+                <FileTableSkeleton colors={colors} />
             ) : files.length === 0 ? (
-                <p style={{color: colors.textSecondary}}>You have no files stored. Please upload some from the tool page.</p>
+                <p style={{color: colors.textSecondary, marginTop: '20px'}}>You have no files stored. Please upload some from the tool page.</p>
             ) : (
                 <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '15px' }}>
@@ -897,7 +1004,7 @@ function App() {
     const [isProcessing, setIsProcessing] = useState(false);
 
     // State for querying and results
-    const [question, setQuestion] = useState('');
+    const [question, setQuestion] =useState('');
     const [answer, setAnswer] = useState('');
     const [sources, setSources] = useState('');
     const [mode, setMode] = useState('');
@@ -969,6 +1076,64 @@ function App() {
         border: `1px solid ${colors.borderColor}`
     };
 
+    // --- NEW: INJECT CSS KEYFRAMES ---
+    useEffect(() => {
+        const styleId = 'app-animations';
+        if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
+            style.id = styleId;
+            style.innerHTML = `
+                @keyframes shimmer {
+                    0% { background-position: -468px 0; }
+                    100% { background-position: 468px 0; }
+                }
+
+                div[style*="animation: shimmer"] {
+                    background: linear-gradient(to right, ${colors.answerBg} 8%, ${colors.bgPrimary} 18%, ${colors.answerBg} 33%);
+                    background-size: 800px 104px;
+                }
+
+                @keyframes fadeIn {
+                    from { opacity: 0; transform: translateY(-10px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+
+                {/* --- NEW: BLINK ANIMATION --- */}
+                @keyframes blink {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0; }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+        // Update shimmer colors on theme change
+        const styleTag = document.getElementById(styleId);
+        if (styleTag) {
+             styleTag.innerHTML = `
+                @keyframes shimmer {
+                    0% { background-position: -468px 0; }
+                    100% { background-position: 468px 0; }
+                }
+
+                div[style*="animation: shimmer"] {
+                    background: linear-gradient(to right, ${colors.answerBg} 8%, ${colors.bgPrimary} 18%, ${colors.answerBg} 33%);
+                    background-size: 800px 104px;
+                }
+
+                @keyframes fadeIn {
+                    from { opacity: 0; transform: translateY(-10px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+
+                {/* --- NEW: BLINK ANIMATION --- */}
+                @keyframes blink {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0; }
+                }
+            `;
+        }
+    }, [colors.answerBg, colors.bgPrimary]); // Re-run if theme colors change
+
 
     // --- AUTH STATUS CHECKER (UPDATED for Firebase) ---
     const checkAuthStatus = useCallback(() => {
@@ -1002,7 +1167,8 @@ function App() {
                 }
                 // --- END: SERVER WAKE-UP PING ---
 
-                setActiveNotesFileName(null);
+                // --- BUG FIX: REMOVED THIS LINE ---
+                // setActiveNotesFileName(null); // <-- This was the bug
 
                 if (pageMode === 'login' || pageMode === 'register') {
                     setPageMode('tool');
@@ -1012,7 +1178,7 @@ function App() {
                 setUsername('');
                 setUserId(null);
                 setToken(null);
-                setActiveNotesFileName(null);
+                setActiveNotesFileName(null); // <-- This one is CORRECT (clear on logout)
                 if (pageMode === 'tool' || pageMode === 'file_manager') {
                     setPageMode('login');
                 }
@@ -1105,7 +1271,7 @@ function App() {
                 setFileMessage(`Upload Error: ${data.error}`);
             }
         } catch (error) {
-            setFileMessage(`Network Error: Could not connect to backend server.`);
+            setFileMessage('Network Error: Could not connect to backend server.');
         } finally {
             setIsProcessing(false);
         }
@@ -1120,12 +1286,17 @@ function App() {
     const handleQuery = async (e) => {
         e.preventDefault();
         const canQuery = isAuthenticated && activeNotesFileName && token && question.trim();
+
+        // --- MODIFIED: Improved Error Handling ---
         if (queryLoading || isProcessing || !canQuery) {
              if (!activeNotesFileName) {
-                 setNotesMessage('Please upload or set an active Notes PDF first.');
+                 // Set error in the answer box
+                 setAnswer('Please upload or set an active Notes PDF first.');
+                 setMode('ERROR');
              }
              if (!question.trim()) {
                 setAnswer('Please enter a question.');
+                setMode('ERROR');
              }
              return;
         }
@@ -1148,9 +1319,10 @@ function App() {
                 setFetchedImage(data.image_data || null);
             } else if (response.status === 401) {
                 setAnswer('Unauthorized. Please log in.');
+                setMode('ERROR');
                 handleLogout(); // Force logout on auth failure
             } else {
-                setAnswer(`Query Error: ${data.error}`);
+                setAnswer(data.error); // Show the specific error from the backend
                 setSources(data.sources || '');
                 setMode('ERROR');
             }
@@ -1166,11 +1338,15 @@ function App() {
     const handleGoogleSolve = async (e) => {
         e.preventDefault();
         const canQuery = isAuthenticated && token && question.trim();
+
+        // --- MODIFIED: Improved Error Handling ---
         if (queryLoading || isProcessing || !canQuery) {
              if (!question.trim()) {
                 setAnswer('Please enter a question to solve.');
+                setMode('ERROR');
              }
-            return;
+             // We don't check for activeNotesFileName here because the backend RAG-gate will
+             return;
         }
 
         setQueryLoading(true); setAnswer(''); setSources(''); setMode(''); setFetchedImage(null);
@@ -1191,10 +1367,12 @@ function App() {
                 setFetchedImage(null); // Google solve won't return images
             } else if (response.status === 401) {
                 setAnswer('Unauthorized. Please log in.');
+                setMode('ERROR');
                 handleLogout(); // Force logout on auth failure
             } else {
-                setAnswer(`Query Error: ${data.error}`);
-                setSources(data.sources || '');
+                // --- MODIFIED: This now catches the "not relevant" error ---
+                setAnswer(data.error); // Show the specific error from the backend
+                setSources('Relevance Check Failed');
                 setMode('ERROR');
             }
         } catch (error) {
@@ -1206,9 +1384,30 @@ function App() {
 
 
     const renderAnswerContent = () => {
+        // --- MODIFIED: Use Lottie Animation ---
         if (queryLoading) {
-            return <p style={{ color: colors.accentColor }}>Searching...</p>; // --- MODIFIED: More generic message
+            return (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                    <Player
+                        autoplay
+                        loop
+                        // --- --------------------------------- ---
+                        // --- HERE IS THE FIX (Points to your local import) ---
+                        // --- --------------------------------- ---
+                        src={appAnimationData}
+                        style={{
+                            width: '1200px',
+                            height: '1200px',
+                            border: 'none' // --- FIX: Removed the red debug border ---
+                        }}
+                    />
+                    <p style={{ color: colors.textSecondary, textAlign: 'center', marginTop: '5px', fontWeight: '500' }}>
+                        Thinking...
+                    </p>
+                </div>
+            );
         }
+
         if (!answer) {
             return <p style={{ color: colors.textSecondary }}>Ask a question to begin.</p>;
         }
@@ -1236,11 +1435,9 @@ function App() {
             );
         }
 
+        // --- MODIFIED: Use AnimatedMessage for all errors ---
         if (mode === 'ERROR') {
-            if (answer.includes("daily query limit")) {
-                 return <p style={{ color: 'red', fontWeight: 'bold' }}>{answer}</p>;
-            }
-            return <p style={{ color: 'red', fontWeight: 'bold' }}>{answer}</p>;
+             return <AnimatedMessage message={answer} type="error" colors={colors} />;
         }
 
         // --- NEW: Handle GOOGLE_SOLVE mode ---
@@ -1402,9 +1599,12 @@ function App() {
                                     {isProcessing ? 'Processing...' : 'Upload Notes'}
                                 </button>
                             </div>
-                            <p style={{ marginTop: '10px', color: notesMessage.startsWith('Success') ? colors.successBg : (notesMessage.startsWith('Network') || notesMessage.includes('Error') || notesMessage.includes('Unauthorized') ? 'red' : colors.textSecondary) }}>
-                                {notesMessage || (!isAuthenticated ? 'Please sign in to upload files.' : 'Upload your notes PDF.')}
-                            </p>
+                            {/* --- MODIFIED: Use AnimatedMessage for notes --- */}
+                            <AnimatedMessage
+                                message={notesMessage || (!isAuthenticated ? 'Please sign in to upload files.' : '')}
+                                type={notesMessage.startsWith('Success') ? 'success' : (notesMessage.includes('Error') || notesMessage.includes('Unauthorized') ? 'error' : 'info')}
+                                colors={colors}
+                            />
                         </div>
 
                         {/* Question Paper PDF Upload */}
@@ -1443,9 +1643,12 @@ function App() {
                                     {isProcessing ? 'Processing...' : 'Upload Paper'}
                                 </button>
                             </div>
-                            <p style={{ marginTop: '10px', color: paperMessage.startsWith('Success') ? colors.successBg : (paperMessage.startsWith('Network') || paperMessage.includes('Error') || paperMessage.includes('Unauthorized') ? 'red' : colors.textSecondary) }}>
-                                {paperMessage || (!isAuthenticated ? 'Please sign in to upload files.' : 'Upload your question paper PDF (Optional).')}
-                            </p>
+                             {/* --- MODIFIED: Use AnimatedMessage for paper --- */}
+                            <AnimatedMessage
+                                message={paperMessage || ''}
+                                type={paperMessage.startsWith('Success') ? 'success' : (paperMessage.includes('Error') || paperMessage.includes('Unauthorized') ? 'error' : 'info')}
+                                colors={colors}
+                            />
                         </div>
                     </div>
 

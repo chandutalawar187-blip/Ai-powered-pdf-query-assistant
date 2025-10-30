@@ -5,6 +5,7 @@
   "homepage": "https://chandutalawar187-blip.github.io/Ai-powered-pdf-query-assistant",
   "dependencies": {
     "@capacitor/android": "^7.4.3",
+    "@lottiefiles/react-lottie-player": "^3.6.0",
     "@testing-library/jest-dom": "^5.17.0",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",

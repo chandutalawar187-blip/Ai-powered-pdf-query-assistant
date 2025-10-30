@@ -1,4 +1,4 @@
-# server/app.py (FINAL COMPLETE BACKEND CODE - SECURE ENVIRONMENT VARIABLES)
+# server/app.py (FINAL COMPLETE BACKEND CODE - PERSISTENT SESSIONS)
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime
 from functools import wraps
 import concurrent.futures  # Import for parallel processing
+import threading  # --- NEW: Import for thread-safe file locking ---
 
 # --- CRITICAL FIX: Load environment variables from .env file ---
 load_dotenv()
@@ -145,6 +146,8 @@ os.makedirs(USER_DATA_DIR, exist_ok=True)
 
 # Global in-memory cache for all user sessions (Unchanged)
 USER_SESSIONS = {}
+# --- NEW: A lock to prevent race conditions when reading/writing session JSON
+session_lock = threading.Lock()
 
 
 # --- Helper functions (Verbatim) ---
@@ -155,16 +158,64 @@ def get_user_data_path(user_id):
     return user_dir
 
 
+# --- NEW: Helper to get path for the persistent session file ---
+def get_user_metadata_path(user_id):
+    """Returns the path to the user's session_data.json file."""
+    user_dir = get_user_data_path(user_id)
+    return os.path.join(user_dir, 'session_data.json')
+
+
+# --- NEW: Helper to save the session to disk ---
+def save_session_data(user_id, session):
+    """Atomically saves the user's session to a JSON file."""
+    with session_lock:  # Prevent other threads from writing at the same time
+        try:
+            metadata_path = get_user_metadata_path(user_id)
+            with open(metadata_path, 'w') as f:
+                json.dump(session, f)
+        except Exception as e:
+            print(f"CRITICAL ERROR: Failed to save session for user {user_id}: {e}")
+
+
+# --- MODIFIED: get_session_data now loads from disk ---
 def get_session_data(user_id):
-    if user_id not in USER_SESSIONS:
-        USER_SESSIONS[user_id] = {
+    """
+    Gets a user session. Tries in-memory cache first, then
+    tries to load from the persistent session_data.json file.
+    """
+    # 1. Try in-memory cache (fastest)
+    if user_id in USER_SESSIONS:
+        return USER_SESSIONS[user_id]
+
+    with session_lock:  # Prevent race conditions on first load
+        # 2. Check again in case another thread loaded it while waiting
+        if user_id in USER_SESSIONS:
+            return USER_SESSIONS[user_id]
+
+        # 3. Try loading from persistent disk storage
+        metadata_path = get_user_metadata_path(user_id)
+        if os.path.exists(metadata_path):
+            try:
+                with open(metadata_path, 'r') as f:
+                    session = json.load(f)
+                    USER_SESSIONS[user_id] = session  # Load into memory cache
+                    print(f"Loaded persistent session from disk for user {user_id}")
+                    return session
+            except Exception as e:
+                print(f"Error loading session from disk for user {user_id}: {e}")
+                # Fallback to creating a new session
+
+        # 4. Create a new session if one doesn't exist
+        print(f"Creating new in-memory session for user {user_id}")
+        new_session = {
             'notes_pdf_path': None,
             'paper_pdf_path': None,
             'document_text_chunks': [],
             'query_history': [],
             'uploaded_files': []
         }
-    return USER_SESSIONS[user_id]
+        USER_SESSIONS[user_id] = new_session
+        return new_session
 
 
 def extract_and_crop_image(pdf_path, page_number):
@@ -239,8 +290,10 @@ def extract_text_and_chunk(pdf_path, user_id, file_id, is_notes_file=True):
         print(f"Loading OCR cache for {pdf_filename}...")
         with open(cache_path, 'r') as f:
             cached_data = json.load(f)
-            for chunk in cached_data['chunks']:
-                new_chunks.append(f"{source_label} {chunk}")
+            # --- FIX: We now return the actual chunks, not just the count ---
+            unlabeled_chunks = cached_data.get('chunks', [])
+            labeled_chunks = [f"{source_label} {chunk}" for chunk in unlabeled_chunks]
+            return True, labeled_chunks
 
     else:
         # --- Perform Native/OCR Extraction ---
@@ -297,6 +350,7 @@ def extract_text_and_chunk(pdf_path, user_id, file_id, is_notes_file=True):
 
             # 2. Chunking based on retrieved text (OCR or Native)
             unlabeled_chunks = []  # For caching
+            labeled_chunks = []  # For returning
 
             # Iterate through the sorted pages to maintain document order
             for page_index, text in sorted(raw_text_storage.items()):
@@ -308,19 +362,22 @@ def extract_text_and_chunk(pdf_path, user_id, file_id, is_notes_file=True):
                     unlabeled_chunk = f"[Page {page_number}] {chunk}"
                     unlabeled_chunks.append(unlabeled_chunk)
 
-                    new_chunks.append(f"{source_label} {unlabeled_chunk}")
+                    labeled_chunks.append(f"{source_label} {unlabeled_chunk}")
 
             # 3. Save to cache after successful OCR/Extraction
             with open(cache_path, 'w') as f:
                 json.dump({'chunks': unlabeled_chunks}, f)
 
+            # --- FIX: Return the actual chunks ---
+            return True, labeled_chunks
+
         except Exception as e:
             print(f"Error during PDF processing/OCR: {e}")
             traceback.print_exc()
-            return False, 0
+            return False, []  # Return empty list on failure
 
     # 4. Update Global Session State (Unchanged)
-    return True, len(new_chunks)
+    return True, []
 
 
 def get_question_text_from_paper(question_number, session):
@@ -451,18 +508,14 @@ def delete_file(file_id):
         is_paper = (file['type'] == 'paper')
 
         if is_active_notes or is_paper:
-            # Manually rebuild chunks for the active file(s)
-            success, count = extract_text_and_chunk(file['path'], user_id, file['id'], is_notes_file=is_active_notes)
+            # --- MODIFIED: `extract_text_and_chunk` now returns the chunks
+            success, new_chunks = extract_text_and_chunk(file['path'], user_id, file['id'],
+                                                         is_notes_file=is_active_notes)
             if success:
-                # Need to manually extend the document_text_chunks since extract_text_and_chunk no longer does it globally
-                source_label = "[NOTES]" if is_active_notes else "[PAPER]"
-                # Re-read cached chunks to append them to the session's document_text_chunks
-                cache_path = os.path.join(get_user_data_path(user_id), f"{file['id']}.json")
-                if os.path.exists(cache_path):
-                    with open(cache_path, 'r') as f:
-                        cached_data = json.load(f)
-                        labeled_chunks = [f"{source_label} {chunk}" for chunk in cached_data['chunks']]
-                        session['document_text_chunks'].extend(labeled_chunks)
+                session['document_text_chunks'].extend(new_chunks)
+
+    # --- NEW: Save persistent session ---
+    save_session_data(user_id, session)
 
     return jsonify({"message": f"File {file_to_delete['filename']} deleted successfully."}), 200
 
@@ -493,37 +546,29 @@ def set_active_notes():
         session['query_history'].clear()
 
         # Re-index the newly selected Notes file (to ensure chunks are present)
-        success, count = extract_text_and_chunk(
+        success, notes_chunks = extract_text_and_chunk(
             file_to_activate['path'],
             user_id,
             file_to_activate['id'],
             is_notes_file=True
         )
-
-        # Manually append the chunks to session['document_text_chunks'] from cache
-        source_label = "[NOTES]"
-        cache_path = os.path.join(get_user_data_path(user_id), f"{file_to_activate['id']}.json")
-        if os.path.exists(cache_path):
-            with open(cache_path, 'r') as f:
-                cached_data = json.load(f)
-                labeled_chunks = [f"{source_label} {chunk}" for chunk in cached_data['chunks']]
-                session['document_text_chunks'].extend(labeled_chunks)
+        if success:
+            session['document_text_chunks'].extend(notes_chunks)
 
         # Re-index any currently active paper file (if present)
         paper_file_meta = next((f for f in session['uploaded_files'] if f['type'] == 'paper'), None)
         if paper_file_meta:
-            extract_text_and_chunk(paper_file_meta['path'], user_id, paper_file_meta['id'], is_notes_file=False)
-            # Manually append paper chunks
-            source_label = "[PAPER]"
-            cache_path = os.path.join(get_user_data_path(user_id), f"{paper_file_meta['id']}.json")
-            if os.path.exists(cache_path):
-                with open(cache_path, 'r') as f:
-                    cached_data = json.load(f)
-                    labeled_chunks = [f"{source_label} {chunk}" for chunk in cached_data['chunks']]
-                    session['document_text_chunks'].extend(labeled_chunks)
+            success, paper_chunks = extract_text_and_chunk(
+                paper_file_meta['path'],
+                user_id,
+                paper_file_meta['id'],
+                is_notes_file=False
+            )
+            if success:
+                session['document_text_chunks'].extend(paper_chunks)
 
-        if not success:
-            return jsonify({"error": "Failed to re-index the selected notes file."}), 500
+        # --- NEW: Save persistent session ---
+        save_session_data(user_id, session)
 
         return jsonify({
             "message": f"Successfully set '{file_to_activate['filename']}' as the active Notes source.",
@@ -567,8 +612,8 @@ def handle_upload_logic(file, user_id, is_notes_file):
     file.save(file_path)
 
     # --- Process and create file metadata ---
-    # This function is now much faster for OCR-heavy files
-    success, count = extract_text_and_chunk(file_path, user_id, file_id, is_notes_file=is_notes_file)
+    # --- MODIFIED: This now returns the actual chunks ---
+    success, new_chunks = extract_text_and_chunk(file_path, user_id, file_id, is_notes_file=is_notes_file)
 
     if success:
         file_meta = {
@@ -576,7 +621,7 @@ def handle_upload_logic(file, user_id, is_notes_file):
             'filename': file.filename,
             'type': file_type,
             'path': file_path,
-            'indexed_chunks': count,
+            'indexed_chunks': len(new_chunks),  # Get length from the returned list
             'uploaded_at': datetime.now().strftime("%Y-%m-%d %H:%M")
         }
 
@@ -587,44 +632,44 @@ def handle_upload_logic(file, user_id, is_notes_file):
             session['document_text_chunks'].clear()
             session['query_history'].clear()
 
-            # Manually append the chunks to session['document_text_chunks'] from cache
-            source_label = "[NOTES]"
-            cache_path = os.path.join(get_user_data_path(user_id), f"{file_meta['id']}.json")
-            if os.path.exists(cache_path):
-                with open(cache_path, 'r') as f:
-                    cached_data = json.load(f)
-                    labeled_chunks = [f"{source_label} {chunk}" for chunk in cached_data['chunks']]
-                    session['document_text_chunks'].extend(labeled_chunks)
+            # Add the new notes chunks
+            session['document_text_chunks'].extend(new_chunks)
 
             # Also re-index the currently active paper file (if present)
             paper_file_meta = next((f for f in session['uploaded_files'] if f['type'] == 'paper'), None)
             if paper_file_meta:
-                # Manually append paper chunks
-                source_label = "[PAPER]"
-                cache_path = os.path.join(get_user_data_path(user_id), f"{paper_file_meta['id']}.json")
-                if os.path.exists(cache_path):
-                    with open(cache_path, 'r') as f:
-                        cached_data = json.load(f)
-                        labeled_chunks = [f"{source_label} {chunk}" for chunk in cached_data['chunks']]
-                        session['document_text_chunks'].extend(labeled_chunks)
+                success, paper_chunks = extract_text_and_chunk(
+                    paper_file_meta['path'],
+                    user_id,
+                    paper_file_meta['id'],
+                    is_notes_file=False
+                )
+                if success:
+                    session['document_text_chunks'].extend(paper_chunks)
 
         else:
+            # --- THIS IS BUG #1 FIX ---
+            # We are uploading a paper file
             session['paper_pdf_path'] = file_path  # Set as active paper file
 
+            # Add the new paper chunks to the *existing* context
+            session['document_text_chunks'].extend(new_chunks)
+            # --- END BUG #1 FIX ---
+
         # Remove old file of the same type in the uploaded_files list
-        # FIX: Only remove the old paper file if a new paper file is uploaded.
         if is_notes_file:
-            # Check if a file with the same name already exists in metadata.
-            # If so, remove the old instance before appending the new one.
             session['uploaded_files'] = [f for f in session['uploaded_files'] if f['filename'] != file_meta['filename']]
         else:
-            # Remove only the old paper file (as only one paper file is needed for context)
             session['uploaded_files'] = [f for f in session['uploaded_files'] if f['type'] != file_type]
 
         session['uploaded_files'].append(file_meta)
 
-        return jsonify({"message": f"{file_type.capitalize()} processed successfully. {count} chunks indexed.",
-                        "chunks_count": count}), 200
+        # --- NEW: Save persistent session ---
+        save_session_data(user_id, session)
+
+        return jsonify(
+            {"message": f"{file_type.capitalize()} processed successfully. {len(new_chunks)} chunks indexed.",
+             "chunks_count": len(new_chunks)}), 200
     else:
         # Clean up failed file upload path
         if os.path.exists(file_path):
@@ -638,7 +683,7 @@ def handle_query():
     user_id = request.user_id
     data = request.json
     question = data.get('question', '').strip()
-    session = get_session_data(user_id)
+    session = get_session_data(user_id)  # --- THIS IS NOW ROBUST ---
 
     if not client: return jsonify({"error": "AI client is not initialized. Check API Key."}), 500
 
@@ -646,30 +691,32 @@ def handle_query():
     query_history = session['query_history']
     notes_pdf_path = session['notes_pdf_path']  # Now points to the currently active notes file
 
-    # --- NEW FIX: Rebuild session context if lost (e.g., after server restart) ---
+    # --- MODIFIED: This logic is now the "rebuild from disk" logic ---
     if not document_text_chunks and notes_pdf_path:
-        print("WARNING: Document chunks lost. Attempting context rebuild from file metadata.")
-        session['document_text_chunks'].clear()
+        print("WARNING: Session has chunks on disk but not in memory. Rebuilding context...")
 
-        # Find all current files from metadata list
+        # Find all current files from metadata list (which was loaded from disk)
         for file_meta in session['uploaded_files']:
             is_active_notes = (file_meta['type'] == 'notes' and file_meta['path'] == session.get('notes_pdf_path'))
             is_paper = (file_meta['type'] == 'paper')
 
             if is_active_notes or is_paper:
-                source_label = "[NOTES]" if is_active_notes else "[PAPER]"
-                # Read chunks directly from cache
-                cache_path = os.path.join(get_user_data_path(user_id), f"{file_meta['id']}.json")
-                if os.path.exists(cache_path):
-                    with open(cache_path, 'r') as f:
-                        cached_data = json.load(f)
-                        labeled_chunks = [f"{source_label} {chunk}" for chunk in cached_data['chunks']]
-                        session['document_text_chunks'].extend(labeled_chunks)
+                success, new_chunks = extract_text_and_chunk(
+                    file_meta['path'],
+                    user_id,
+                    file_meta['id'],
+                    is_notes_file=is_active_notes
+                )
+                if success:
+                    session['document_text_chunks'].extend(new_chunks)
 
         # Update chunks list after rebuild attempt
         document_text_chunks = session['document_text_chunks']
+        # --- NEW: Save the rebuilt session ---
+        save_session_data(user_id, session)
 
     if not document_text_chunks:
+        # This is the error you were seeing. It's now a valid error.
         return jsonify(
             {"error": "Please upload at least one PDF first, or ensure the active file is still present."}), 400
 
@@ -828,6 +875,8 @@ def handle_query():
     # Success: Update History
     session['query_history'].append(f"Q: {question}")
     session['query_history'].append(f"A: {answer_text[:50]}...")
+    # --- NEW: Save persistent session ---
+    save_session_data(user_id, session)
 
     image_data = None
 
@@ -868,7 +917,27 @@ def handle_google_solve():
     # We must check for relevance before proceeding to Google.
     try:
         session = get_session_data(user_id)
+
+        # --- MODIFIED: We need to run the context-rebuild logic here too ---
         document_text_chunks = session.get('document_text_chunks', [])
+        notes_pdf_path = session.get('notes_pdf_path')
+
+        if not document_text_chunks and notes_pdf_path:
+            print(f"RAG-gate: Rebuilding context for user {user_id}...")
+            for file_meta in session['uploaded_files']:
+                is_active_notes = (file_meta['type'] == 'notes' and file_meta['path'] == notes_pdf_path)
+                is_paper = (file_meta['type'] == 'paper')
+
+                if is_active_notes or is_paper:
+                    success, new_chunks = extract_text_and_chunk(
+                        file_meta['path'], user_id, file_meta['id'], is_notes_file=is_active_notes
+                    )
+                    if success:
+                        session['document_text_chunks'].extend(new_chunks)
+
+            document_text_chunks = session['document_text_chunks']
+            save_session_data(user_id, session)  # Save the rebuilt context
+        # --- END MODIFIED REBUILD ---
 
         if not document_text_chunks:
             # If they have no PDF uploaded, we can't check for relevance.
