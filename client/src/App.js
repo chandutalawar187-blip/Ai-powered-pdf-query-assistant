@@ -881,6 +881,27 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
         }
     }, [isAuthenticated, token, fetchFiles]);
 
+    // --- ADD THIS NEW useEffect HOOK ---
+    // This hook runs ONCE on page load to set the pageMode from the URL
+    useEffect(() => {
+        const path = window.location.pathname.toLowerCase(); // Gets '/about'
+
+        // Remove leading slash to match your pageMode state names
+        const mode = path.substring(1);
+
+        if (mode === 'about') {
+            setPageMode('about');
+        } else if (mode === 'privacy') {
+            setPageMode('privacy');
+        } else if (mode === 'file_manager') {
+            setPageMode('file_manager');
+        }
+        // If the path is '/' (mode is ''),
+        // the app will default to 'login' and let the auth check redirect to 'tool'.
+        // This is the correct behavior.
+
+    }, []); // The empty array [] means this only runs once.
+
     // --- MODIFIED: Determine message type ---
     const messageType = message.includes('Failed') || message.includes('Error') ? 'error' : (message.includes('Success') ? 'success' : 'info');
 
@@ -981,7 +1002,7 @@ const FileManagementPage = ({ colors, setPageMode, isAuthenticated, token, userI
 function App() {
     // Global State for UI
     const [theme, setTheme] = useState('light');
-    const [pageMode, setPageMode] =useState('login');
+    const [pageMode, setPageMode] =useState('loading');
 
     // AUTH STATE
     const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -1231,6 +1252,16 @@ function App() {
         }
     };
 
+    // --- ADD THIS NEW HELPER FUNCTION ---
+    const navigate = (mode) => {
+        // 1. Set the React state
+        setPageMode(mode);
+
+        // 2. Update the browser's URL bar without reloading the page
+        // We set the path to '/' for the main tool, or '/about' for the about page, etc.
+        const path = (mode === 'tool' || mode === 'login') ? '/' : `/${mode}`;
+        window.history.pushState({}, '', path);
+    };
 
     // --- DUAL PDF UPLOAD HANDLERS (UPDATED to use Token) ---
 
@@ -1396,7 +1427,7 @@ function App() {
                         // --- --------------------------------- ---
                         src={appAnimationData}
                         style={{
-                            width: '1200px',
+                            width: '300px',
                             maxWidth: '100%',
                             height: 'auto',
                             border: 'none' // --- FIX: Removed the red debug border ---
@@ -1472,7 +1503,11 @@ function App() {
 
     return (
         <div className="App" style={globalStyle}>
-            {pageMode === 'login' || pageMode === 'register' ? (
+            {pageMode === 'loagin' ? (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', color: colors.textPrimary, backgroundColor: colors.bgPrimary}}>
+                    <h2 style={{fontWeight: '500'}}>Loading Verbatim AI...</h2>
+                </div>
+            ) : pageMode === 'login' || pageMode === 'register' ? (
                 <LoginPage
                     colors={colors}
                     setPageMode={setPageMode}
@@ -1758,15 +1793,15 @@ function App() {
 
                         <div style={{ marginBottom: '10px', fontSize: '0.9em' }}>
 
-                            <button onClick={() => setPageMode('about')} style={{ margin: '0 10px', color: colors.textSecondary, textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                            <button onClick={() => navigate('about')} style={{ margin: '0 10px', color: colors.textSecondary, textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                                 About
                             </button>
 
-                            <button onClick={() => setPageMode('tool')} style={{ margin: '0 10px', color: colors.textSecondary, textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                            <button onClick={() => navigate('tool')} style={{ margin: '0 10px', color: colors.textSecondary, textDecoration: 'none', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                                 Tool
                             </button>
                             <button
-                                onClick={() => setPageMode('privacy')}
+                                onClick={() => navigate('privacy')}
                                 style={{
                                     margin: '0 10px',
                                     color: colors.textSecondary,

@@ -1,6 +1,6 @@
 # server/app.py (FINAL COMPLETE BACKEND CODE - PERSISTENT SESSIONS)
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os
@@ -124,7 +124,10 @@ def verify_firebase_token(f):
 
 
 # --- INITIAL SETUP ---
-app = Flask(__name__)
+# This tells Flask to use the 'client/build' folder as the static folder
+app = Flask(__name__,
+            static_folder=os.path.join(os.path.dirname(__file__), 'client', 'build'),
+            static_url_path='')
 # CRITICAL: Allow credentials to be sent (needed for cookies/session storage)
 CORS(app, supports_credentials=True)
 
@@ -1011,6 +1014,13 @@ def handle_google_solve():
         "image_data": None
     })
 
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve(path):
+    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    else:
+        return send_from_directory(app.static_folder, 'index.html')
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
