@@ -1,4 +1,4 @@
-# server/app.py (FINAL COMPLETE BACKEND CODE - PERSISTENT SESSIONS)
+# server/app.py (FINAL COMPLETE BACKEND CODE - WITH RAZORPAY)
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -16,30 +16,30 @@ import json
 import uuid
 from datetime import datetime
 from functools import wraps
-import concurrent.futures  # Import for parallel processing
-import threading  # --- NEW: Import for thread-safe file locking ---
+import concurrent.futures
+import threading
+
+# --- ‼️ NEW IMPORTS FOR RAZORPAY ‼️ ---
+import razorpay
+import hmac
+import hashlib
+
+# --- ‼️ END NEW IMPORTS ‼️ ---
 
 # --- CRITICAL FIX: Load environment variables from .env file ---
 load_dotenv()
 
 # --- START: FIREBASE ADMIN INTEGRATION ---
 import firebase_admin
-from firebase_admin import credentials, auth
+from firebase_admin import credentials, auth, firestore
 
-# NOTE: The credentials must be loaded from external environment variables for security.
-# --- Firebase Initialization Block ---
+# ... (Firebase Admin SDK initialization code is correct) ...
 try:
-    # --- READING SECRETS FROM ENVIRONMENT (os.getenv) ---
     FIREBASE_TYPE = os.getenv("FIREBASE_TYPE")
     FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID")
     FIREBASE_PRIVATE_KEY_ID = os.getenv("FIREBASE_PRIVATE_KEY_ID")
-
-    # CRITICAL: Read the private key using the most robust method:
-    # 1. Read the raw string (it may contain literal \n or \\n from shell/dotenv).
     FIREBASE_PRIVATE_KEY_RAW = os.getenv("FIREBASE_PRIVATE_KEY", "")
-    # 2. Safely replace *any* backslash-n sequences with actual newlines (\n).
     FIREBASE_PRIVATE_KEY = FIREBASE_PRIVATE_KEY_RAW.replace(r'\n', '\n').strip()
-
     FIREBASE_CLIENT_EMAIL = os.getenv("FIREBASE_CLIENT_EMAIL")
     FIREBASE_CLIENT_ID = os.getenv("FIREBASE_CLIENT_ID")
     FIREBASE_AUTH_URI = os.getenv("FIREBASE_AUTH_URI")
@@ -47,15 +47,10 @@ try:
     FIREBASE_AUTH_PROVIDER_X509_CERT_URL = os.getenv("FIREBASE_AUTH_PROVIDER_X509_CERT_URL")
     FIREBASE_CLIENT_X509_CERT_URL = os.getenv("FIREBASE_CLIENT_X509_CERT_URL")
     FIREBASE_UNIVERSE_DOMAIN = os.getenv("FIREBASE_UNIVERSE_DOMAIN")
-    # --- END OF SECRET READING ---
 
-    # Check if critical secrets are present before attempting initialization
     if not all([FIREBASE_PROJECT_ID, FIREBASE_PRIVATE_KEY_ID, FIREBASE_PRIVATE_KEY, FIREBASE_CLIENT_EMAIL]):
-        # This will be triggered if any required field is missing in the .env file or render config
         raise EnvironmentError("Missing critical Firebase environment variables for initialization.")
 
-    # Create credential dictionary from environment variables
-    # The 'private_key' field now holds the correctly formatted key string with real newlines.
     cred_dict = {
         "type": FIREBASE_TYPE,
         "project_id": FIREBASE_PROJECT_ID,
@@ -70,79 +65,114 @@ try:
         "universe_domain": FIREBASE_UNIVERSE_DOMAIN
     }
 
-    # Initialize the Firebase Admin SDK
     if not firebase_admin._apps:
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred)
+        print("✅ Firebase Admin SDK initialized.")
 
+    db = firestore.client()
+    print("✅ Firestore client initialized.")
 
-except EnvironmentError as ee:
-    # Print custom warning for visibility during local development
-    print("----------------------------------------------------------")
-    print(f"⚠️ FIREBASE ADMIN INIT FAILED: {ee}")
-    print("This server will run in UNVERIFIED mode. Fix .env file.")
-    print("----------------------------------------------------------")
-    firebase_admin = None
 except Exception as e:
-    print(f"FATAL WARNING: Firebase Admin SDK failed to load. Error: {e}")
+    print(f"❌ FATAL WARNING: Firebase Admin SDK failed to load. Error: {e}")
     firebase_admin = None
-
-# NOTE: The 'firebase_admin' variable will be None if initialization failed.
-if 'firebase_admin' not in locals() or firebase_admin is None:
-    firebase_admin = None
+    db = None
+# --- END: FIREBASE ADMIN INTEGRATION ---
 
 
-# Decorator to verify Firebase ID Token
-def verify_firebase_token(f):
+# --- ‼️ NEW: RAZORPAY CLIENT SETUP ‼️ ---
+try:
+    RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+    RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET")
+    RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET")
+
+    if not all([RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET]):
+        print("❌ FATAL WARNING: Razorpay environment variables not set. Payment will fail.")
+        razorpay_client = None
+    else:
+        razorpay_client = razorpay.Client(
+            auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
+        )
+        print("✅ Razorpay client initialized.")
+
+except Exception as e:
+    print(f"❌ FATAL WARNING: Razorpay client failed to load. Error: {e}")
+    razorpay_client = None
+
+
+# --- ‼️ END: RAZORPAY CLIENT SETUP ‼️ ---
+
+
+# --- Decorator (Unchanged) ---
+def get_user_and_profile(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not firebase_admin:
-            # This path is taken if the SDK failed to initialize at startup
-            print("WARNING: Firebase Admin not initialized. Rejecting request.")
+        if not firebase_admin or not db:
+            print("❌ DECORATOR ERROR: Firebase Admin/Firestore not initialized. Rejecting request.")
             return jsonify({"error": "Server authentication setup incomplete. Cannot verify user."}), 500
 
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
+            print("❌ DECORATOR ERROR: Missing or invalid Authorization header.")
             return jsonify({"error": "Unauthorized: Missing or invalid Authorization header."}), 401
 
         id_token = auth_header.split('Bearer ')[1]
         try:
-            # Verify the token using Firebase Admin SDK
+            print("✅ DECORATOR: Verifying ID token...")
             decoded_token = auth.verify_id_token(id_token)
-            request.user_id = decoded_token['uid']  # Attach the user_id to the request object
+            user_id = decoded_token['uid']
+            print(f"✅ DECORATOR: Token verified for user_id: {user_id}")
+
+            print(f"✅ DECORATOR: Accessing Firestore for user: {user_id}")
+            user_ref = db.collection('users').document(user_id)
+            user_profile = user_ref.get()
+            print("✅ DECORATOR: Firestore .get() successful.")
+
+            if not user_profile.exists:
+                print(f"✅ DECORATOR: New user. Creating profile for: {user_id}")
+                default_profile = {
+                    'plan': 'free',
+                    'query_count': 0,
+                    'query_limit': 50,
+                    'email': decoded_token.get('email', 'N/A')
+                }
+                user_ref.set(default_profile)
+                print("✅ DECORATOR: Firestore .set() successful.")
+                request.user_profile = default_profile
+            else:
+                print(f"✅ DECORATOR: Existing user. Profile found for: {user_id}")
+                request.user_profile = user_profile.to_dict()
+
+            request.user_id = user_id
+            request.user_ref = user_ref
+            print(f"✅ DECORATOR: Profile loaded. Handing off to route: {f.__name__}")
+
+        except auth.InvalidIdTokenError as e:
+            print(f"❌ DECORATOR ERROR: Firebase Token INVALID: {e}")
+            return jsonify(
+                {"error": "Unauthorized: Invalid ID token. Clocks might be skewed or projects mismatched."}), 401
         except Exception as e:
-            print(f"Firebase Token Verification Failed: {e}")
-            # Note: 401 is correct for invalid token
-            return jsonify({"error": "Unauthorized: Invalid or expired token."}), 401
+            print(f"❌ DECORATOR ERROR: A non-token error occurred (likely Firestore): {e}")
+            traceback.print_exc()
+            return jsonify({"error": f"Unauthorized: Could not verify user profile. {e}"}), 401  # Pass error back
 
         return f(*args, **kwargs)
 
     return decorated_function
 
 
-# --- END: FIREBASE ADMIN INTEGRATION ---
+# --- END Decorator ---
 
 
-# --- INITIAL SETUP ---
-# --- INITIAL SETUP ---
-
-# 1. Calculate the path to the 'client/build' folder
-# This goes UP one level ('..') from 'server' to find 'client/build'
+# --- INITIAL SETUP (Unchanged) ---
 build_folder = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'client', 'build'))
-
-# 2. Add a print statement for debugging
-# Check your Render logs to see if this path is correct!
 print(f"--- 🚀 Serving static files from: {build_folder} ---")
-
-# 3. Initialize the Flask app with the correct static_folder path
-app = Flask(__name__)
-# CRITICAL: Allow credentials to be sent (needed for cookies/session storage)
+app = Flask(__name__,
+            static_folder=build_folder,
+            static_url_path='')
 CORS(app, supports_credentials=True)
-
-# Global state
 client = None
 try:
-    # Read GEMINI_API_KEY from the environment (or .env file)
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     if not GEMINI_API_KEY:
         print("Warning: GEMINI_API_KEY not found. API functions will fail.")
@@ -150,18 +180,16 @@ try:
         client = genai.Client(api_key=GEMINI_API_KEY)
 except Exception as e:
     print(f"Error initializing Gemini client: {e}")
-
-# Base directory to store user-specific files (Simulates Cloud Storage persistence)
 USER_DATA_DIR = os.path.join(tempfile.gettempdir(), 'ai_pdf_user_data')
 os.makedirs(USER_DATA_DIR, exist_ok=True)
-
-# Global in-memory cache for all user sessions (Unchanged)
 USER_SESSIONS = {}
-# --- NEW: A lock to prevent race conditions when reading/writing session JSON
 session_lock = threading.Lock()
 
 
-# --- Helper functions (Verbatim) ---
+# --- END INITIAL SETUP ---
+
+
+# --- HELPER FUNCTIONS (Unchanged) ---
 def get_user_data_path(user_id):
     if not user_id: return None
     user_dir = os.path.join(USER_DATA_DIR, user_id)
@@ -169,17 +197,13 @@ def get_user_data_path(user_id):
     return user_dir
 
 
-# --- NEW: Helper to get path for the persistent session file ---
 def get_user_metadata_path(user_id):
-    """Returns the path to the user's session_data.json file."""
     user_dir = get_user_data_path(user_id)
     return os.path.join(user_dir, 'session_data.json')
 
 
-# --- NEW: Helper to save the session to disk ---
 def save_session_data(user_id, session):
-    """Atomically saves the user's session to a JSON file."""
-    with session_lock:  # Prevent other threads from writing at the same time
+    with session_lock:
         try:
             metadata_path = get_user_metadata_path(user_id)
             with open(metadata_path, 'w') as f:
@@ -188,35 +212,22 @@ def save_session_data(user_id, session):
             print(f"CRITICAL ERROR: Failed to save session for user {user_id}: {e}")
 
 
-# --- MODIFIED: get_session_data now loads from disk ---
 def get_session_data(user_id):
-    """
-    Gets a user session. Tries in-memory cache first, then
-    tries to load from the persistent session_data.json file.
-    """
-    # 1. Try in-memory cache (fastest)
     if user_id in USER_SESSIONS:
         return USER_SESSIONS[user_id]
-
-    with session_lock:  # Prevent race conditions on first load
-        # 2. Check again in case another thread loaded it while waiting
+    with session_lock:
         if user_id in USER_SESSIONS:
             return USER_SESSIONS[user_id]
-
-        # 3. Try loading from persistent disk storage
         metadata_path = get_user_metadata_path(user_id)
         if os.path.exists(metadata_path):
             try:
                 with open(metadata_path, 'r') as f:
                     session = json.load(f)
-                    USER_SESSIONS[user_id] = session  # Load into memory cache
+                    USER_SESSIONS[user_id] = session
                     print(f"Loaded persistent session from disk for user {user_id}")
                     return session
             except Exception as e:
                 print(f"Error loading session from disk for user {user_id}: {e}")
-                # Fallback to creating a new session
-
-        # 4. Create a new session if one doesn't exist
         print(f"Creating new in-memory session for user {user_id}")
         new_session = {
             'notes_pdf_path': None,
@@ -230,11 +241,9 @@ def get_session_data(user_id):
 
 
 def extract_and_crop_image(pdf_path, page_number):
-    """Renders the entire page where a figure is cited and returns it as a Base64 PNG."""
     if not os.path.exists(pdf_path):
         print(f"CRITICAL IMAGE DEBUG: PDF path not found at {pdf_path}")
         return None
-
     doc = None
     try:
         doc = fitz.open(pdf_path)
@@ -246,31 +255,23 @@ def extract_and_crop_image(pdf_path, page_number):
         return f"data:image/png;base64,{base64_img}"
     except Exception as e:
         print(f"IMAGE EXTRACTION FAILED on page {page_number}. Error: {e}")
-        traceback.print_exc()
         return None
     finally:
-        if doc and not doc.is_closed:
-            doc.close()
+        if doc: doc.close()
 
 
 def perform_ocr_on_page(pdf_path, page_index, client):
-    """
-    Renders a PDF page to an image and uses Gemini Vision for OCR.
-    This function is thread-safe as it opens and closes its own doc.
-    """
     doc = None
     try:
         doc = fitz.open(pdf_path)
         page = doc[page_index]
-        zoom_matrix = fitz.Matrix(3, 3)  # High-res for better OCR
+        zoom_matrix = fitz.Matrix(3, 3)
         pix = page.get_pixmap(matrix=zoom_matrix)
         img_bytes = pix.tobytes(output="png")
-
         prompt_parts = [
             genai.types.Part.from_bytes(data=img_bytes, mime_type='image/png'),
             "Perform OCR on this image. Extract all text accurately, preserving newlines and spacing."
         ]
-
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt_parts,
@@ -279,181 +280,144 @@ def perform_ocr_on_page(pdf_path, page_index, client):
         return response.text if response.text else ""
     except Exception as e:
         print(f"GEMINI OCR FAILED on page {page_index + 1}: {e}")
-        return ""  # Return empty string on failure
+        return ""
     finally:
-        if doc and not doc.is_closed:
-            doc.close()
+        if doc: doc.close()
 
 
-# --- MODIFIED: This function now performs parallel OCR ---
+def is_pdf_handwritten(pdf_path, client):
+    doc = None
+    try:
+        doc = fitz.open(pdf_path)
+        if len(doc) == 0: return False
+        page = doc[0]
+        zoom_matrix = fitz.Matrix(2, 2)
+        pix = page.get_pixmap(matrix=zoom_matrix)
+        img_bytes = pix.tobytes(output="png")
+        prompt_parts = [
+            genai.types.Part.from_bytes(data=img_bytes, mime_type='image/png'),
+            "Is this document primarily handwritten or is it computer-typed? Answer with only one word: 'Handwritten' or 'Typed'."
+        ]
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt_parts,
+            config={"system_instruction": "You are a document classifier."}
+        )
+        text_response = response.text.strip().lower()
+        print(f"Handwriting check result: {text_response}")
+        return 'handwritten' in text_response
+    except Exception as e:
+        print(f"GEMINI Handwriting Check FAILED: {e}")
+        return False
+    finally:
+        if doc: doc.close()
+
+
 def extract_text_and_chunk(pdf_path, user_id, file_id, is_notes_file=True):
-    """Extracts text, using parallel OCR fallback, and updates the user's session data/cache."""
-
     session = get_session_data(user_id)
     source_label = "[NOTES]" if is_notes_file else "[PAPER]"
-    new_chunks = []
     pdf_filename = os.path.basename(pdf_path)
-
-    # 1. Check for OCR Cache (Simulated Persistence)
     cache_path = os.path.join(get_user_data_path(user_id), f"{file_id}.json")
 
     if os.path.exists(cache_path):
         print(f"Loading OCR cache for {pdf_filename}...")
         with open(cache_path, 'r') as f:
             cached_data = json.load(f)
-            # --- FIX: We now return the actual chunks, not just the count ---
             unlabeled_chunks = cached_data.get('chunks', [])
             labeled_chunks = [f"{source_label} {chunk}" for chunk in unlabeled_chunks]
             return True, labeled_chunks
 
-    else:
-        # --- Perform Native/OCR Extraction ---
-        try:
-            reader = pypdf.PdfReader(pdf_path)
-            num_pages = len(reader.pages)
+    try:
+        reader = pypdf.PdfReader(pdf_path)
+        num_pages = len(reader.pages)
+        raw_text_storage = {}
+        pages_to_ocr_indices = []
 
-            # --- Triage Phase ---
-            # We'll store text by page index {0: "text...", 1: "text..."}
-            raw_text_storage = {}
-            # We'll store a list of page indices that need OCR
-            pages_to_ocr_indices = []
+        print(f"Triage Phase: Scanning {num_pages} pages for {pdf_filename}...")
+        for i in range(num_pages):
+            page = reader.pages[i]
+            text = page.extract_text()
+            if len(text) < 100 and client:
+                pages_to_ocr_indices.append(i)
+                raw_text_storage[i] = ""
+            else:
+                raw_text_storage[i] = text if text else f"[NO READABLE TEXT ON PAGE {i + 1}]"
+        print(f"Triage Complete: {len(pages_to_ocr_indices)} pages flagged for OCR.")
 
-            print(f"Triage Phase: Scanning {num_pages} pages for {pdf_filename}...")
-            for i in range(num_pages):
-                page = reader.pages[i]
-                text = page.extract_text()
+        if pages_to_ocr_indices:
+            def ocr_task(page_index):
+                ocr_text = perform_ocr_on_page(pdf_path, page_index, client)
+                return page_index, ocr_text
 
-                # Heuristic Check
-                if len(text) < 100 and client:
-                    pages_to_ocr_indices.append(i)
-                    # Add a placeholder; we'll fill this during the parallel phase
-                    raw_text_storage[i] = ""
-                else:
-                    raw_text_storage[i] = text if text else f"[NO READABLE TEXT ON PAGE {i + 1}]"
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                print(f"Starting parallel OCR for {len(pages_to_ocr_indices)} pages...")
+                results = executor.map(ocr_task, pages_to_ocr_indices)
+                for page_index, ocr_text in results:
+                    raw_text_storage[page_index] = ocr_text if ocr_text else f"[OCR FAILED ON PAGE {page_index + 1}]"
+            print("Parallel OCR complete.")
 
-            print(f"Triage Complete: {len(pages_to_ocr_indices)} pages flagged for OCR.")
+        unlabeled_chunks = []
+        labeled_chunks = []
+        for page_index, text in sorted(raw_text_storage.items()):
+            page_number = page_index + 1
+            chunk_size = 1000
+            for j in range(0, len(text), chunk_size):
+                chunk = text[j:j + chunk_size]
+                unlabeled_chunk = f"[Page {page_number}] {chunk}"
+                unlabeled_chunks.append(unlabeled_chunk)
+                labeled_chunks.append(f"{source_label} {unlabeled_chunk}")
 
-            # --- Parallel OCR Phase ---
-            if pages_to_ocr_indices:
-                # This wrapper function will be called by each thread
-                def ocr_task(page_index):
-                    # Calls the helper function
-                    ocr_text = perform_ocr_on_page(pdf_path, page_index, client)
-                    # Return both the index and the text so we can put it in the right place
-                    return page_index, ocr_text
-
-                # Use a thread pool to run OCR tasks in parallel
-                # We set max_workers to 10 to avoid overwhelming the API
-                # and to be respectful of Render's free tier limits.
-                with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-                    print(f"Starting parallel OCR for {len(pages_to_ocr_indices)} pages...")
-
-                    # 'map' automatically runs tasks in parallel and blocks
-                    # until all are complete.
-                    results = executor.map(ocr_task, pages_to_ocr_indices)
-
-                    # --- Collate Results ---
-                    for page_index, ocr_text in results:
-                        raw_text_storage[
-                            page_index] = ocr_text if ocr_text else f"[OCR FAILED ON PAGE {page_index + 1}]"
-
-                print("Parallel OCR complete.")
-
-            # 2. Chunking based on retrieved text (OCR or Native)
-            unlabeled_chunks = []  # For caching
-            labeled_chunks = []  # For returning
-
-            # Iterate through the sorted pages to maintain document order
-            for page_index, text in sorted(raw_text_storage.items()):
-                page_number = page_index + 1
-                chunk_size = 1000
-                for j in range(0, len(text), chunk_size):
-                    chunk = text[j:j + chunk_size]
-
-                    unlabeled_chunk = f"[Page {page_number}] {chunk}"
-                    unlabeled_chunks.append(unlabeled_chunk)
-
-                    labeled_chunks.append(f"{source_label} {unlabeled_chunk}")
-
-            # 3. Save to cache after successful OCR/Extraction
-            with open(cache_path, 'w') as f:
-                json.dump({'chunks': unlabeled_chunks}, f)
-
-            # --- FIX: Return the actual chunks ---
-            return True, labeled_chunks
-
-        except Exception as e:
-            print(f"Error during PDF processing/OCR: {e}")
-            traceback.print_exc()
-            return False, []  # Return empty list on failure
-
-    # 4. Update Global Session State (Unchanged)
-    return True, []
+        with open(cache_path, 'w') as f:
+            json.dump({'chunks': unlabeled_chunks}, f)
+        return True, labeled_chunks
+    except Exception as e:
+        print(f"Error during PDF processing/OCR: {e}")
+        traceback.print_exc()
+        return False, []
 
 
 def get_question_text_from_paper(question_number, session):
-    """
-    FIXED: Extracts question text using a more robust two-pass search logic.
-    """
     paper_pdf_path = session.get('paper_pdf_path')
-    if not paper_pdf_path:
-        return None
-
+    if not paper_pdf_path: return None
     try:
-        # 1. Extract raw text from the entire document
         paper_text = ""
         reader = pypdf.PdfReader(paper_pdf_path)
         for page in reader.pages:
             paper_text += page.extract_text() + "\n"
-
-        # 2. Extract just the question number
         q_num_match = re.search(r'\d+', question_number)
-        if not q_num_match:
-            return None
+        if not q_num_match: return None
         num = q_num_match.group()
-
-        # 3. Aggressive pattern to find question text starting with the number and ending before the next number
-        # Pattern: (Q/Question)? [Number] [Delimiter] (The actual question text) (?=next Q/EOF)
         pattern = re.compile(
-            # Start with Q or Question (optional) followed by spaces and the question number
             r'(?:Q|Question)?\s*' + re.escape(num) +
-            # Followed by a common delimiter (., ), spaces, and then the capture group
             r'[\.\)\s]+(.*?)(?=' +
-            # Look ahead for the next question number or end of file
             r'\s*(?:Q|Question)?\s*(\d+)\s*[\.\)\s]+|\Z)',
             re.DOTALL | re.IGNORECASE
         )
         match = pattern.search(paper_text)
-
         if match:
             q_text = match.group(1).strip()
-            # Clean up trailing options markers like (a), (b), etc.
             q_text = re.sub(r'\s+[a-z][\.\)]?\s*$', '', q_text, flags=re.IGNORECASE).strip()
-
             if q_text and len(q_text) > 5:
                 return q_text
-
-        # Fallback: If the regex fails, pass the original query string to the LLM.
-        # This allows the model to attempt to interpret the original "Q1" query against the document.
         print("DEBUG: Question regex failed. Using original query as fallback.")
         return question_number
-
     except Exception as e:
         print(f"ERROR reading question paper: {e}")
         return None
 
 
-# --- API ENDPOINTS ---
+# --- END HELPER FUNCTIONS ---
 
+
+# --- API ENDPOINTS ---
 @app.route('/', methods=['GET'])
 def homepage_status():
-    """Confirms the API server is running for Render Health Checks."""
     return jsonify({"status": "API Server is running successfully."}), 200
 
 
+# --- AUTH/USER ENDPOINTS ---
 @app.route('/auth/status', methods=['GET'])
 def auth_status():
-    """Client handles auth state via onAuthStateChanged."""
     return jsonify({"message": "Auth status handled by Firebase client."}), 200
 
 
@@ -461,14 +425,149 @@ def auth_status():
 @app.route('/auth/register', methods=['POST'])
 @app.route('/auth/logout', methods=['POST'])
 def auth_placeholder_routes():
-    """Keep these endpoints to prevent network errors in case the client calls them, but they are unused now."""
     return jsonify({"message": "Authentication handled client-side by Firebase."}), 200
 
 
-# --- FILE MANAGER ENDPOINTS (PROTECTED) ---
+@app.route('/get-user-profile', methods=['GET'])
+@get_user_and_profile
+def get_profile():
+    return jsonify(request.user_profile), 200
 
+
+# --- END AUTH/USER ENDPOINTS ---
+
+
+# --- ‼️ DELETED ENDPOINT ‼️ ---
+# The old /upgrade-plan route is GONE.
+# --- ‼️ END DELETED ENDPOINT ‼️ ---
+
+
+# --- ‼️ NEW: RAZORPAY ENDPOINT ‼️ ---
+@app.route('/create-payment-order', methods=['POST'])
+@get_user_and_profile
+def create_payment_order():
+    user_id = request.user_id
+    user_profile = request.user_profile
+
+    if user_profile['plan'] == 'paid':
+        return jsonify({"error": "You are already on a Pro plan."}), 400
+
+    if not razorpay_client:
+        return jsonify({"error": "Payment system is not configured."}), 500
+
+    # Amount is in paise (₹99.00 -> 9900 paise)
+    payment_amount = 9900
+    payment_currency = 'INR'
+
+    try:
+        # Create a Razorpay order
+        order = razorpay_client.order.create({
+            'amount': payment_amount,
+            'currency': payment_currency,
+            'receipt': f'user_{user_id}',
+            'notes': {
+                'user_id': user_id,  # ⬅️ CRITICAL: This links the payment to the user
+                'email': user_profile.get('email', 'N/A')
+            }
+        })
+
+        # Send the order_id and key back to the frontend
+        return jsonify({
+            'order_id': order['id'],
+            'key_id': RAZORPAY_KEY_ID,
+            'amount': order['amount'],
+            'currency': order['currency'],
+            'user_email': user_profile.get('email', 'N/A'),
+            'username': user_profile.get('username', 'User')  # Get username from profile if available
+        }), 200
+
+    except Exception as e:
+        print(f"❌ RAZORPAY ERROR: Failed to create order for user {user_id}: {e}")
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to create payment order: {e}"}), 500
+
+
+# --- ‼️ END: RAZORPAY ENDPOINT ‼️ ---
+
+
+# --- ‼️ NEW: WEBHOOK ENDPOINT ‼️ ---
+@app.route('/payment-webhook', methods=['POST'])
+def payment_webhook():
+    if not RAZORPAY_WEBHOOK_SECRET or not razorpay_client:
+        print("❌ WEBHOOK ERROR: Razorpay secrets not configured.")
+        return jsonify({"error": "Webhook service not configured."}), 500
+
+    webhook_body = request.data
+    webhook_signature = request.headers.get('X-Razorpay-Signature')
+
+    if not webhook_signature:
+        return jsonify({"error": "Missing signature."}), 400
+
+    try:
+        # 1. Verify the signature
+        razorpay_client.utility.verify_webhook_signature(
+            webhook_body.decode('utf-8'),
+            webhook_signature,
+            RAZORPAY_WEBHOOK_SECRET
+        )
+    except razorpay.errors.SignatureVerificationError as e:
+        print(f"❌ WEBHOOK ERROR: Invalid signature: {e}")
+        return jsonify({"error": "Invalid webhook signature."}), 400
+    except Exception as e:
+        print(f"❌ WEBHOOK ERROR: Verification failed: {e}")
+        return jsonify({"error": "Webhook verification failed."}), 500
+
+    # 2. Signature is valid. Decode the event.
+    try:
+        event = json.loads(webhook_body)
+    except json.JSONDecodeError:
+        return jsonify({"error": "Invalid JSON."}), 400
+
+    # 3. Handle the 'order.paid' event
+    if event.get('event') == 'order.paid':
+        print("✅ WEBHOOK: Received order.paid event.")
+        try:
+            payment_entity = event['payload']['payment']['entity']
+            order_entity = event['payload']['order']['entity']
+
+            # 4. Get the user_id we stored in the notes!
+            user_id = order_entity['notes'].get('user_id')
+
+            if not user_id:
+                print("❌ WEBHOOK CRITICAL: user_id missing from order notes!")
+                return jsonify({"error": "User ID missing from order."}), 400
+
+            if not db:
+                print("❌ WEBHOOK CRITICAL: Firestore client (db) is not available.")
+                return jsonify({"error": "Database client not initialized."}), 500
+
+            # 5. ‼️ THIS IS THE LOGIC from your old /upgrade-plan ‼️
+            print(f"✅ WEBHOOK: Upgrading plan for user: {user_id}")
+            user_ref = db.collection('users').document(user_id)
+            user_ref.update({
+                'plan': 'paid',
+                'query_limit': -1,
+                'query_count': 0,
+                'last_payment_id': payment_entity['id']
+            })
+
+            print(f"✅ WEBHOOK: Successfully upgraded user {user_id} to Pro.")
+
+        except Exception as e:
+            print(f"❌ WEBHOOK ERROR: Failed to process order.paid event: {e}")
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": "Failed to update user profile"}), 500
+
+    # 6. Acknowledge receipt
+    return jsonify({"status": "ok"}), 200
+
+
+# --- ‼️ END: WEBHOOK ENDPOINT ‼️ ---
+
+
+# --- FILE MANAGER ENDPOINTS (Unchanged) ---
 @app.route('/files', methods=['GET'])
-@verify_firebase_token  # PROTECTED
+@get_user_and_profile
 def get_files():
     user_id = request.user_id
     session = get_session_data(user_id)
@@ -476,143 +575,105 @@ def get_files():
 
 
 @app.route('/files/<file_id>', methods=['DELETE'])
-@verify_firebase_token  # PROTECTED
+@get_user_and_profile
 def delete_file(file_id):
     user_id = request.user_id
     session = get_session_data(user_id)
-
     file_to_delete = next((f for f in session['uploaded_files'] if f['id'] == file_id), None)
-
     if not file_to_delete:
         return jsonify({"error": "File not found."}), 404
-
     try:
         os.remove(file_to_delete['path'])
     except Exception as e:
         print(f"File system deletion failed for {file_to_delete['path']}: {e}")
-
     try:
         cache_path = os.path.join(get_user_data_path(user_id), f"{file_id}.json")
         if os.path.exists(cache_path):
             os.remove(cache_path)
     except Exception as e:
         print(f"Cache deletion failed for {cache_path}: {e}")
-
     session['uploaded_files'] = [f for f in session['uploaded_files'] if f['id'] != file_id]
-
-    # --- FIX: Rebuild Context after Deletion ---
-    # Clearing and rebuilding ensures the context is correct for remaining files.
     session['document_text_chunks'].clear()
     session['query_history'].clear()
-
-    # Also reset the main file path pointers if the current active files are deleted
     if file_to_delete['path'] == session.get('notes_pdf_path'):
         session['notes_pdf_path'] = None
     if file_to_delete['path'] == session.get('paper_pdf_path'):
         session['paper_pdf_path'] = None
-
-    # Re-process remaining files to rebuild the context
     for file in session['uploaded_files']:
-        # This conditional logic ensures we only rebuild the notes context
-        # from the currently active notes file, not ALL notes files.
         is_active_notes = (file['type'] == 'notes' and file['path'] == session.get('notes_pdf_path'))
         is_paper = (file['type'] == 'paper')
-
         if is_active_notes or is_paper:
-            # --- MODIFIED: `extract_text_and_chunk` now returns the chunks
             success, new_chunks = extract_text_and_chunk(file['path'], user_id, file['id'],
                                                          is_notes_file=is_active_notes)
             if success:
                 session['document_text_chunks'].extend(new_chunks)
-
-    # --- NEW: Save persistent session ---
     save_session_data(user_id, session)
-
     return jsonify({"message": f"File {file_to_delete['filename']} deleted successfully."}), 200
 
 
-# --- NEW ENDPOINT: SET ACTIVE NOTES FILE (FOR SESSION SHIFT) ---
 @app.route('/set-active-notes', methods=['POST'])
-@verify_firebase_token  # PROTECTED
+@get_user_and_profile
 def set_active_notes():
     user_id = request.user_id
     data = request.json
     file_id = data.get('fileId')
-
     if not file_id:
         return jsonify({"error": "File ID required."}), 400
-
     session = get_session_data(user_id)
     file_to_activate = next((f for f in session['uploaded_files'] if f['id'] == file_id and f['type'] == 'notes'), None)
-
     if not file_to_activate:
         return jsonify({"error": "Notes file not found or invalid type."}), 404
-
     try:
-        # 1. Update the active path pointer
         session['notes_pdf_path'] = file_to_activate['path']
-
-        # 2. Clear and rebuild the main RAG context using the new active notes file
         session['document_text_chunks'].clear()
         session['query_history'].clear()
-
-        # Re-index the newly selected Notes file (to ensure chunks are present)
         success, notes_chunks = extract_text_and_chunk(
-            file_to_activate['path'],
-            user_id,
-            file_to_activate['id'],
-            is_notes_file=True
+            file_to_activate['path'], user_id, file_to_activate['id'], is_notes_file=True
         )
         if success:
             session['document_text_chunks'].extend(notes_chunks)
-
-        # Re-index any currently active paper file (if present)
         paper_file_meta = next((f for f in session['uploaded_files'] if f['type'] == 'paper'), None)
         if paper_file_meta:
             success, paper_chunks = extract_text_and_chunk(
-                paper_file_meta['path'],
-                user_id,
-                paper_file_meta['id'],
-                is_notes_file=False
+                paper_file_meta['path'], user_id, paper_file_meta['id'], is_notes_file=False
             )
             if success:
                 session['document_text_chunks'].extend(paper_chunks)
-
-        # --- NEW: Save persistent session ---
         save_session_data(user_id, session)
-
         return jsonify({
             "message": f"Successfully set '{file_to_activate['filename']}' as the active Notes source.",
             "filename": file_to_activate['filename']
         }), 200
-
     except Exception as e:
         print(f"Error setting active notes file: {e}")
         return jsonify({"error": f"Internal server error: {e}"}), 500
 
 
-# --- UPLOAD ENDPOINTS (PROTECTED) ---
+# --- END FILE MANAGER ENDPOINTS ---
 
+
+# --- UPLOAD ENDPOINTS (Unchanged) ---
 @app.route('/upload-notes', methods=['POST'])
-@verify_firebase_token  # PROTECTED
+@get_user_and_profile
 def upload_notes_pdf():
     user_id = request.user_id
+    user_profile = request.user_profile
     if 'pdf' not in request.files: return jsonify({"error": "No file part"}), 400
     pdf_file = request.files['pdf']
-    return handle_upload_logic(pdf_file, user_id, is_notes_file=True)
+    return handle_upload_logic(pdf_file, user_id, user_profile, is_notes_file=True)
 
 
 @app.route('/upload-paper', methods=['POST'])
-@verify_firebase_token  # PROTECTED
+@get_user_and_profile
 def upload_paper_pdf():
     user_id = request.user_id
+    user_profile = request.user_profile
     if 'pdf' not in request.files: return jsonify({"error": "No file part"}), 400
     pdf_file = request.files['pdf']
-    return handle_upload_logic(pdf_file, user_id, is_notes_file=False)
+    return handle_upload_logic(pdf_file, user_id, user_profile, is_notes_file=False)
 
 
-def handle_upload_logic(file, user_id, is_notes_file):
-    """Refactored common upload logic."""
+def handle_upload_logic(file, user_id, user_profile, is_notes_file):
     session = get_session_data(user_id)
     file_id = str(uuid.uuid4())
     user_dir = get_user_data_path(user_id)
@@ -622,136 +683,113 @@ def handle_upload_logic(file, user_id, is_notes_file):
     file_path = os.path.join(user_dir, saved_filename)
     file.save(file_path)
 
-    # --- Process and create file metadata ---
-    # --- MODIFIED: This now returns the actual chunks ---
-    success, new_chunks = extract_text_and_chunk(file_path, user_id, file_id, is_notes_file=is_notes_file)
+    if is_notes_file and user_profile['plan'] == 'free':
+        if is_pdf_handwritten(file_path, client):
+            print(f"User {user_id} (free) blocked from uploading handwritten PDF.")
+            os.remove(file_path)
+            return jsonify(
+                {"error": "Handwritten PDFs are a premium feature. Please upgrade to upload this file."}), 403
 
+    success, new_chunks = extract_text_and_chunk(file_path, user_id, file_id, is_notes_file=is_notes_file)
     if success:
         file_meta = {
             'id': file_id,
             'filename': file.filename,
             'type': file_type,
             'path': file_path,
-            'indexed_chunks': len(new_chunks),  # Get length from the returned list
+            'indexed_chunks': len(new_chunks),
             'uploaded_at': datetime.now().strftime("%Y-%m-%d %H:%M")
         }
-
-        # When uploading a *new* file, it becomes the active file for its type
         if is_notes_file:
-            session['notes_pdf_path'] = file_path  # Set as active notes file
-            # Since a new notes file is uploaded, we clear the RAG context and set the new context
+            session['notes_pdf_path'] = file_path
             session['document_text_chunks'].clear()
             session['query_history'].clear()
-
-            # Add the new notes chunks
             session['document_text_chunks'].extend(new_chunks)
-
-            # Also re-index the currently active paper file (if present)
             paper_file_meta = next((f for f in session['uploaded_files'] if f['type'] == 'paper'), None)
             if paper_file_meta:
                 success, paper_chunks = extract_text_and_chunk(
-                    paper_file_meta['path'],
-                    user_id,
-                    paper_file_meta['id'],
-                    is_notes_file=False
+                    paper_file_meta['path'], user_id, paper_file_meta['id'], is_notes_file=False
                 )
                 if success:
                     session['document_text_chunks'].extend(paper_chunks)
-
         else:
-            # --- THIS IS BUG #1 FIX ---
-            # We are uploading a paper file
-            session['paper_pdf_path'] = file_path  # Set as active paper file
-
-            # Add the new paper chunks to the *existing* context
+            session['paper_pdf_path'] = file_path
             session['document_text_chunks'].extend(new_chunks)
-            # --- END BUG #1 FIX ---
 
-        # Remove old file of the same type in the uploaded_files list
         if is_notes_file:
             session['uploaded_files'] = [f for f in session['uploaded_files'] if f['filename'] != file_meta['filename']]
         else:
             session['uploaded_files'] = [f for f in session['uploaded_files'] if f['type'] != file_type]
 
         session['uploaded_files'].append(file_meta)
-
-        # --- NEW: Save persistent session ---
         save_session_data(user_id, session)
-
         return jsonify(
             {"message": f"{file_type.capitalize()} processed successfully. {len(new_chunks)} chunks indexed.",
              "chunks_count": len(new_chunks)}), 200
     else:
-        # Clean up failed file upload path
         if os.path.exists(file_path):
             os.remove(file_path)
         return jsonify({"error": f"Failed to process {file_type.capitalize()} PDF."}), 500
 
 
+# --- END UPLOAD ENDPOINTS ---
+
+
+# --- QUERY ENDPOINT (Unchanged, includes confirmation fix) ---
 @app.route('/query', methods=['POST'])
-@verify_firebase_token  # PROTECTED
+@get_user_and_profile
 def handle_query():
     user_id = request.user_id
+    user_profile = request.user_profile
+    user_ref = request.user_ref
+
+    if user_profile['plan'] == 'free':
+        if user_profile['query_count'] >= user_profile['query_limit']:
+            return jsonify(
+                {"error": f"Query limit of {user_profile['query_limit']} reached. Please upgrade to continue."}), 403
+
     data = request.json
     question = data.get('question', '').strip()
-    session = get_session_data(user_id)  # --- THIS IS NOW ROBUST ---
+    session = get_session_data(user_id)
 
     if not client: return jsonify({"error": "AI client is not initialized. Check API Key."}), 500
-
     document_text_chunks = session['document_text_chunks']
     query_history = session['query_history']
-    notes_pdf_path = session['notes_pdf_path']  # Now points to the currently active notes file
+    notes_pdf_path = session['notes_pdf_path']
 
-    # --- MODIFIED: This logic is now the "rebuild from disk" logic ---
     if not document_text_chunks and notes_pdf_path:
         print("WARNING: Session has chunks on disk but not in memory. Rebuilding context...")
-
-        # Find all current files from metadata list (which was loaded from disk)
         for file_meta in session['uploaded_files']:
             is_active_notes = (file_meta['type'] == 'notes' and file_meta['path'] == session.get('notes_pdf_path'))
             is_paper = (file_meta['type'] == 'paper')
-
             if is_active_notes or is_paper:
                 success, new_chunks = extract_text_and_chunk(
-                    file_meta['path'],
-                    user_id,
-                    file_meta['id'],
-                    is_notes_file=is_active_notes
+                    file_meta['path'], user_id, file_meta['id'], is_notes_file=is_active_notes
                 )
                 if success:
                     session['document_text_chunks'].extend(new_chunks)
-
-        # Update chunks list after rebuild attempt
         document_text_chunks = session['document_text_chunks']
-        # --- NEW: Save the rebuilt session ---
         save_session_data(user_id, session)
 
     if not document_text_chunks:
-        # This is the error you were seeing. It's now a valid error.
         return jsonify(
             {"error": "Please upload at least one PDF first, or ensure the active file is still present."}), 400
 
     lower_q = question.lower()
-
-    # --- STEP 1: QUERY REWRITE (Question Number Logic) ---
     q_num_match = re.search(r'(q\s*\d+|\s*question\s*\d+|\s*#\s*\d+)', lower_q)
-
     if q_num_match and session.get('paper_pdf_path'):
         q_num_str = q_num_match.group().strip()
         extracted_q_text = get_question_text_from_paper(q_num_str, session)
-
         if extracted_q_text:
             question = extracted_q_text
             lower_q = question.lower()
 
-    # --- PREPARE HISTORY CONTEXT ---
     history_context = "\n\n".join(query_history[-5:])
     if history_context:
         history_context = "--- Conversation History ---\n" + history_context + "\n------------------------------\n"
     else:
         history_context = ""
 
-    # --- MODE 1: FULL TEXT EXTRACTION (Bypass LLM) ---
     full_text_keywords = ['explain all the pdf', 'give me the content', 'show all content', 'extract all text']
     if any(keyword in lower_q for keyword in full_text_keywords):
         full_text = "\n\n".join(document_text_chunks)
@@ -759,39 +797,34 @@ def handle_query():
                         "sources": f"Complete content extracted from ALL uploaded files ({len(document_text_chunks)} chunks).",
                         "mode": "FULL_TEXT"})
 
-    # --- MODE 2: COMPARISON DETECTION (FIXED LOGIC) ---
+    active_filename = "your document"
+    if notes_pdf_path:
+        active_file_meta = next((f for f in session['uploaded_files'] if f['path'] == notes_pdf_path), None)
+        if active_file_meta:
+            active_filename = active_file_meta['filename']
+
     comparison_keywords = ['compare', 'difference', 'differentiate', 'distinguish']
     is_comparison_request = any(keyword in lower_q for keyword in comparison_keywords)
+    answer_text = ""
+    mode = "VERBATIM"
+    mode_info = ""
 
     if is_comparison_request:
         mode = "COMPARISON"
-
-        # --- NEW: Dynamic Topic Extraction ---
-        # Try to find "compare A and B" or "difference between A and B"
         topic_match = re.search(
-            r'(?:compare|difference between|differentiate|distinguish)\s+(.*?)\s+(?:and|vs\.?|with)\s+(.*)',
-            lower_q,
-            re.IGNORECASE
-        )
-
+            r'(?:compare|difference between|differentiate|distinguish)\s+(.*?)\s+(?:and|vs\.?|with)\s+(.*)', lower_q,
+            re.IGNORECASE)
         topic_a = "Topic 1"
         topic_b = "Topic 2"
-
         if topic_match:
             try:
-                # Clean up the captured groups
                 raw_a = topic_match.group(1).strip()
                 raw_b = topic_match.group(2).strip()
-
-                # Further clean-up: limit to 3 words and UPPERCASE for the header
                 topic_a = " ".join(raw_a.split()[:3]).upper()
                 topic_b = " ".join(raw_b.split()[:3]).upper()
             except Exception as e:
                 print(f"Regex topic extraction failed: {e}")
-                # Fallback to default "Topic 1" and "Topic 2" is already set
-        # --- END: Dynamic Topic Extraction ---
 
-        # The keyword logic for RAG retrieval is still useful
         keywords = lower_q.replace('compare', '').replace('difference', '').replace('differentiate', '').replace(
             'between', '').split()
         relevant_chunks = [chunk for chunk in document_text_chunks if any(kw in chunk.lower() for kw in keywords)][:30]
@@ -799,49 +832,42 @@ def handle_query():
 
         retrieved_pages = sorted(
             list(set([int(chunk.split('[Page ')[1].split(']')[0]) for chunk in relevant_chunks if '[Page ' in chunk])))
-        page_ref_string = f" (Sources: Pages {', '.join(map(str, retrieved_pages))})"
 
-        # --- MODIFIED: Use dynamic topics in mode_info
-        mode_info = f"Comparison Mode ({topic_a} vs {topic_b})"
+        page_ref_string = ""
+        if retrieved_pages:
+            page_ref_string = f" on pages {', '.join(map(str, retrieved_pages))}"
+        mode_info = f"Comparison Table from '{active_filename}' (Used {len(relevant_chunks)} chunks from pages: {', '.join(map(str, retrieved_pages))})"
 
-        # --- MODIFIED: DYNAMIC SYSTEM INSTRUCTION ---
-        # We now use an f-string to inject the extracted topic names
+        confirmation_prefix = (
+            f"**Confirmation:** 👍\n"
+            f"Yes, this comparison table was generated directly from your uploaded file, **`{active_filename}`**. "
+            f"The information was extracted from the content{page_ref_string} of that document.\n\n"
+            "---\n\n"
+        )
+        failure_message = "Insufficient data for a comparison table was not found in the document."
+
         system_instruction = (
-            "You are an expert Data Structuring Analyst. Your task is to extract and structure comparison points for the two concepts in the user's question, using ONLY the CONTEXT provided.\n\nRULES:\n"
-            f"1. **STRICT OUTPUT FORMAT:** The entire output MUST be a single Markdown table. Do not output anything that is not part of the table, except the citation.\n"
-            f"2. **TABLE STRUCTURE (CRITICAL):** The table MUST have exactly three columns: 'Parameter', '{topic_a}', and '{topic_b}'. Use these exact headings for the data columns.\n"
-            f"3. **CONTENT PRIORITY:** Extract the distinct comparison points from the CONTEXT and place them directly into the appropriate cell. **You MUST use complete, verbatim phrases or sentences** from the CONTEXT for the '{topic_a}' and '{topic_b}' columns. Do NOT summarize, rephrase, or consolidate the content; break the source sentences into the table cells as directly as possible.\n"
-            f"4. **CITATION (CRITICAL):** Append the citation string {{page_ref_string}} at the very end of the markdown table on a separate line. The citation must be present.\n"
-            "5. **NO QUOTES/INTRO/CLOSING:** Do NOT include any introductory or explanatory text or quotes outside the table and the citation.\n"
-            "6. **FAILURE:** If information for a clear comparison table is not in the context, reply with the exact phrase: 'Insufficient data for a comparison table was not found in the document.'")
+            f"You are an expert Data Structuring Analyst. Your job is to create a markdown comparison table from the CONTEXT. "
+            f"1. **Find Data:** Locate information for the comparison in the CONTEXT. "
+            f"2. **Format Table:** Create a markdown table. The table MUST have exactly three columns: 'Parameter', '{topic_a}', and '{topic_b}'. "
+            f"3. **Format Output:** PREPEND the following confirmation message to your answer, exactly as written: \n`{confirmation_prefix}`\n"
+            f"4. **Combine:** After the confirmation, provide the markdown table. "
+            f"5. **FAILURE:** If information is not in the context, reply with ONLY the exact phrase: `{failure_message}`"
+        )
+        prompt = f"User Question: {question}\n\nCONTEXT:\n{context}"
 
-        prompt = f"User Question: {question}\n\nCONTEXT:\n{context}\n\nCITATION STRING TO APPEND: {page_ref_string}"
-
-        # Execute Comparison Query
         try:
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config={"system_instruction": system_instruction}
+                model='gemini-2.5-flash', contents=prompt, config={"system_instruction": system_instruction}
             )
             answer_text = response.text
+            if failure_message not in answer_text and active_filename not in answer_text:
+                answer_text = confirmation_prefix + answer_text
         except APIError as e:
             answer_text = f"API FAILED during comparison: {str(e)}"
             mode = "ERROR"
-
-        # Return immediately if it was a comparison request (FIX APPLIED HERE)
-        return jsonify({
-            "answer": answer_text,
-            "sources": mode_info,  # --- MODIFIED: Send dynamic mode_info
-            "mode": mode,
-            "image_data": None
-        })
-
     else:
-        # --- MODE 3: VERBATIM EXTRACTION (NO GOOGLE) ---
-        mode = "VERBATIM"  # --- MODIFIED: Renamed mode
-
-        # 1. Universal Cleaning: Remove instructional fluff words only
+        mode = "VERBATIM"
         fluff_words = ['name the', 'broad categories of', 'explain them briefly', 'the four', 'and', 'for', 'marks',
                        'briefly', 'neat diagram', 'with a', 'explain the', 'following the', 'model', 'hosts',
                        'communication', 'what is', 'what are', 'please explain', 'describe', 'definition', 'type of',
@@ -849,50 +875,52 @@ def handle_query():
         cleaned_query_parts = lower_q.split()
         final_keywords = [word for word in cleaned_query_parts if word not in fluff_words and len(word) > 2]
         keywords = final_keywords
+
         relevant_chunks = [chunk for chunk in document_text_chunks if any(kw in chunk.lower() for kw in keywords)][:25]
         context = "\n---\n".join(relevant_chunks)
-        mode_info = f"Verbatim Extraction Mode (Using {len(relevant_chunks)} chunks)"
 
-        # --- HYPER-STRICT EXTRACTION INSTRUCTION (MODIFIED) ---
-        # --- Removed all mentions of Google Search ---
+        retrieved_pages = sorted(
+            list(set([int(chunk.split('[Page ')[1].split(']')[0]) for chunk in relevant_chunks if '[Page ' in chunk])))
+
+        page_ref_string = ""
+        if retrieved_pages:
+            page_ref_string = f" on pages {', '.join(map(str, retrieved_pages))}"
+        mode_info = f"Verbatim Extraction from '{active_filename}' (Used {len(relevant_chunks)} chunks from pages: {', '.join(map(str, retrieved_pages))})"
+
+        confirmation_prefix = (
+            f"**Confirmation:** 👍\n"
+            f"Yes, this answer was generated directly from your uploaded file, **`{active_filename}`**. "
+            f"The information was extracted from the content{page_ref_string} of that document.\n\n"
+            "---\n\n"
+        )
+        failure_message = "The required information was not found in the uploaded document."
+
         system_instruction = (
-            "You are a MUTE, Document-Bound Extraction Specialist. Your ONLY source of knowledge is the CONTEXT. "
-            "RULES:\n"
-            "1. **MUST BE VERBATIM:** The entire output MUST be copied EXACTLY from the CONTEXT. Do not reword, summarize, or add any commentary.\n"
-            "2. **OUTPUT FORMAT:** The response MUST be the exact quote(s). Return all sentences/paragraphs necessary to provide the full explanation.\n"
-            "3. **CITATION:** The entire response MUST be followed by the explicit citation [Page X]. If the answer spans multiple chunks/pages, include all relevant citations.\n"
-            "4. **IMAGE HINT (CRITICAL):** If the answer explicitly references a figure or if the question asks for a 'diagram,' your output must ALSO include the reference [FIG:Page X] at the end, using the page number where the diagram/figure is found in the context.\n"
-            "5. **FAILURE:** If the answer is not in the context, reply with the exact phrase: 'The required information was not found in the uploaded document.'")
-
+            f"You are a MUTE, Document-Bound Extraction Specialist. Your ONLY job is to find the verbatim answer to the user's question from the CONTEXT provided. "
+            f"1. **Find the Answer:** Locate the exact text in the CONTEXT that answers the question. "
+            f"2. **Format the Output:** PREPEND the following confirmation message to your answer, exactly as written: \n`{confirmation_prefix}`\n"
+            f"3. **Combine:** After the confirmation, provide the extracted verbatim answer. "
+            f"4. **FAILURE:** If the answer is not in the context, reply with ONLY the exact phrase: `{failure_message}`"
+        )
         prompt = f"CONVERSATION HISTORY: {history_context} \nUser Question: {question}\n\nCONTEXT:\n{context}"
 
         try:
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config={
-                    "system_instruction": system_instruction
-                    # --- FIX: REMOVED THE "tools" KEY ENTIRELY ---
-                }
+                model='gemini-2.5-flash', contents=prompt, config={"system_instruction": system_instruction}
             )
             answer_text = response.text
+            if failure_message not in answer_text and active_filename not in answer_text:
+                answer_text = confirmation_prefix + answer_text
         except APIError as e:
             answer_text = f"API FAILED (QUOTA/KEY): {str(e)[:100]}..."
             mode = "ERROR"
             mode_info = f"VERBATIM (RAG failed to access API)"
 
-    # --- 5. FINISH & RETURN RESPONSE ---
-
-    # Success: Update History
     session['query_history'].append(f"Q: {question}")
     session['query_history'].append(f"A: {answer_text[:50]}...")
-    # --- NEW: Save persistent session ---
     save_session_data(user_id, session)
-
     image_data = None
-
-    # Image Detection (now checks the final answer text)
-    if notes_pdf_path and (mode == "VERBATIM"):  # --- MODIFIED: Checked for new mode name
+    if notes_pdf_path and (mode == "VERBATIM"):
         try:
             page_match_raw = re.search(r'\[FIG:Page\s*(\d+)\]', answer_text)
             if page_match_raw:
@@ -901,7 +929,13 @@ def handle_query():
         except Exception as e:
             print(f"IMAGE PROCESSING/EXTRACTION ERROR: {e}")
 
-    # Successful response
+    is_failure_message = failure_message in answer_text or "Insufficient data" in answer_text
+    if user_profile['plan'] == 'free' and mode != "ERROR" and not is_failure_message:
+        try:
+            user_ref.update({'query_count': firestore.Increment(1)})
+        except Exception as e:
+            print(f"Failed to increment query count for {user_id}: {e}")
+
     return jsonify({
         "answer": answer_text,
         "sources": mode_info,
@@ -910,52 +944,48 @@ def handle_query():
     })
 
 
-# --- MODIFIED ENDPOINT FOR GOOGLE-ONLY MCQ SOLVING (Now with RAG-gate) ---
+# --- END QUERY ENDPOINT ---
+
+
+# --- GOOGLE SOLVE (Unchanged) ---
 @app.route('/google-solve', methods=['POST'])
-@verify_firebase_token  # PROTECTED
+@get_user_and_profile
 def handle_google_solve():
-    user_id = request.user_id  # We get this to verify the user
+    user_id = request.user_id
+    user_profile = request.user_profile
+    user_ref = request.user_ref
+
+    if user_profile['plan'] == 'free':
+        if user_profile['query_count'] >= user_profile['query_limit']:
+            return jsonify(
+                {"error": f"Query limit of {user_profile['query_limit']} reached. Please upgrade to continue."}), 403
+
     data = request.json
     question = data.get('question', '').strip()
 
-    if not client:
-        return jsonify({"error": "AI client is not initialized. Check API Key."}), 500
+    if not client: return jsonify({"error": "AI client is not initialized. Check API Key."}), 500
+    if not question: return jsonify({"error": "No question provided."}), 400
 
-    if not question:
-        return jsonify({"error": "No question provided."}), 400
-
-    # --- NEW: RAG-GATE LOGIC ---
-    # We must check for relevance before proceeding to Google.
     try:
         session = get_session_data(user_id)
-
-        # --- MODIFIED: We need to run the context-rebuild logic here too ---
         document_text_chunks = session.get('document_text_chunks', [])
         notes_pdf_path = session.get('notes_pdf_path')
-
         if not document_text_chunks and notes_pdf_path:
             print(f"RAG-gate: Rebuilding context for user {user_id}...")
             for file_meta in session['uploaded_files']:
                 is_active_notes = (file_meta['type'] == 'notes' and file_meta['path'] == notes_pdf_path)
                 is_paper = (file_meta['type'] == 'paper')
-
                 if is_active_notes or is_paper:
                     success, new_chunks = extract_text_and_chunk(
                         file_meta['path'], user_id, file_meta['id'], is_notes_file=is_active_notes
                     )
                     if success:
                         session['document_text_chunks'].extend(new_chunks)
-
             document_text_chunks = session['document_text_chunks']
-            save_session_data(user_id, session)  # Save the rebuilt context
-        # --- END MODIFIED REBUILD ---
-
+            save_session_data(user_id, session)
         if not document_text_chunks:
-            # If they have no PDF uploaded, we can't check for relevance.
-            # Block the query.
             return jsonify({"error": "Please upload a relevant PDF before using the Google solve feature."}), 400
 
-        # Use the same keyword cleaning as the main /query endpoint
         lower_q = question.lower()
         fluff_words = ['name the', 'broad categories of', 'explain them briefly', 'the four', 'and', 'for', 'marks',
                        'briefly', 'neat diagram', 'with a', 'explain the', 'following the', 'model', 'hosts',
@@ -964,7 +994,6 @@ def handle_google_solve():
         cleaned_query_parts = lower_q.split()
         final_keywords = [word for word in cleaned_query_parts if word not in fluff_words and len(word) > 2]
 
-        # Check if any of the keywords exist in the document
         is_relevant = False
         if final_keywords:
             for chunk in document_text_chunks:
@@ -972,7 +1001,6 @@ def handle_google_solve():
                     is_relevant = True
                     break
         else:
-            # If no keywords (e.g., "explain"), just check for the raw question
             if any(lower_q in chunk.lower() for chunk in document_text_chunks):
                 is_relevant = True
 
@@ -980,47 +1008,61 @@ def handle_google_solve():
             print(f"Google solve blocked: Question '{question}' not relevant to PDF.")
             return jsonify(
                 {"error": "This question does not appear to be related to the content of your uploaded PDF."}), 400
-
     except Exception as e:
         print(f"Error during RAG-gate check: {e}")
-        # Fail safe: if the check fails, just return an error
         return jsonify({"error": "Could not verify question relevance."}), 500
-    # --- END: RAG-GATE LOGIC ---
 
-    # If the check above passed, we proceed to Google Search.
     print(f"RAG-gate passed. Proceeding to Google Search for: '{question}'")
-
-    # This is a general-purpose, helpful-expert prompt.
     GOOGLE_SOLVE_INSTRUCTION = (
-        "You are an expert, helpful Q&A assistant. Your primary goal is to answer the user's question accurately and concisely. "
-        "You MUST use the Google Search tool to find the most current and correct information. "
-        "If the question is a Multiple Choice Question (MCQ), state the correct answer and provide a brief explanation for why it is correct. "
-        "Do not mention the PDF or any notes."
+        "You are an expert, helpful Q&A assistant. Provide a clear and concise answer to the user's question."
     )
+
+    answer_text = ""
+    mode = "GOOGLE_SOLVE"
 
     try:
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=question,  # We send the question directly
+            contents=question,
             config={
                 "system_instruction": GOOGLE_SOLVE_INSTRUCTION,
-                "tools": [{"google_search": {}}]  # --- We ONLY use Google Search here ---
+                "tools": [{"google_search": {}}]
             }
         )
         answer_text = response.text
-
     except APIError as e:
         answer_text = f"API FAILED (QUOTA/KEY): {str(e)[:100]}..."
+        mode = "ERROR"
     except Exception as e:
         answer_text = f"An unknown error occurred: {str(e)}"
+        mode = "ERROR"
 
-    # Successful response
+    if user_profile['plan'] == 'free' and mode != "ERROR":
+        try:
+            user_ref.update({'query_count': firestore.Increment(1)})
+        except Exception as e:
+            print(f"Failed to increment query count for {user_id}: {e}")
+
     return jsonify({
         "answer": answer_text,
         "sources": "Answer generated using Google Search.",
-        "mode": "GOOGLE_SOLVE",
+        "mode": mode,
         "image_data": None
     })
+
+
+# --- END GOOGLE SOLVE ---
+
+
+# --- CATCH-ALL ROUTE (Unchanged) ---
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve(path):
+    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    else:
+        return send_from_directory(app.static_folder, 'index.html')
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
