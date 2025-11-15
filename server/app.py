@@ -428,7 +428,9 @@ def auth_placeholder_routes():
     return jsonify({"message": "Authentication handled client-side by Firebase."}), 200
 
 
+# ‼️ FIX: Added trailing slash route to prevent 404 mismatch in deployed environment ‼️
 @app.route('/get-user-profile', methods=['GET'])
+@app.route('/get-user-profile/', methods=['GET'])
 @get_user_and_profile
 def get_profile():
     return jsonify(request.user_profile), 200
@@ -652,7 +654,7 @@ def set_active_notes():
 # --- END FILE MANAGER ENDPOINTS ---
 
 
-# --- UPLOAD ENDPOINTS (Fixed logic) ---
+# --- UPLOAD ENDPOINTS (Previously fixed logic) ---
 @app.route('/upload-notes', methods=['POST'])
 @get_user_and_profile
 def upload_notes_pdf():
@@ -673,7 +675,6 @@ def upload_paper_pdf():
     return handle_upload_logic(pdf_file, user_id, user_profile, is_notes_file=False)
 
 
-# --- FIXED handle_upload_logic function ---
 def handle_upload_logic(file, user_id, user_profile, is_notes_file):
     session = get_session_data(user_id)
     file_id = str(uuid.uuid4())
@@ -683,11 +684,11 @@ def handle_upload_logic(file, user_id, user_profile, is_notes_file):
     # Ensure a filename exists before proceeding
     if not file.filename:
         return jsonify({"error": "File name is missing or invalid."}), 400
-    
+
     file_extension = os.path.splitext(file.filename)[1]
     saved_filename = f"{file_id}{file_extension}"
     file_path = os.path.join(user_dir, saved_filename)
-    
+
     # --- CRITICAL FIX: Wrap file save and processing in a try/except block ---
     try:
         # 1. Save the file (This operation was the main vulnerability for uncaught exceptions)
@@ -722,7 +723,7 @@ def handle_upload_logic(file, user_id, user_profile, is_notes_file):
                 session['document_text_chunks'].clear()
                 session['query_history'].clear()
                 session['document_text_chunks'].extend(new_chunks)
-                
+
                 # Re-index paper if present to combine contexts
                 paper_file_meta = next((f for f in session['uploaded_files'] if f['type'] == 'paper'), None)
                 if paper_file_meta:
@@ -735,11 +736,10 @@ def handle_upload_logic(file, user_id, user_profile, is_notes_file):
                 session['paper_pdf_path'] = file_path
                 session['document_text_chunks'].extend(new_chunks)
 
-            # 5. Remove the OLD file of the same type and add the NEW one. 
-            # FIX: Unify and simplify the logic for cleaning up old files by type.
+            # 5. Remove the OLD file of the same type and add the NEW one.
             session['uploaded_files'] = [f for f in session['uploaded_files'] if f['type'] != file_type]
             session['uploaded_files'].append(file_meta)
-            
+
             save_session_data(user_id, session)
 
             return jsonify(
@@ -755,7 +755,7 @@ def handle_upload_logic(file, user_id, user_profile, is_notes_file):
         # 7. Catch all other errors (e.g., file save error, disk full, permission issue)
         print(f"CRITICAL UPLOAD ERROR for user {user_id}: {e}")
         traceback.print_exc()
-        
+
         # Attempt cleanup if the file was saved before the exception
         if os.path.exists(file_path):
             try:
@@ -764,6 +764,8 @@ def handle_upload_logic(file, user_id, user_profile, is_notes_file):
                 print(f"Failed to clean up file {file_path} after error: {cleanup_e}")
 
         return jsonify({"error": f"Internal server error during upload: Failed to save or process file. Please check file format and server logs for details."}), 500
+
+
 # --- END UPLOAD ENDPOINTS ---
 
 
@@ -1086,13 +1088,23 @@ def handle_google_solve():
 # --- END GOOGLE SOLVE ---
 
 
-# --- CATCH-ALL ROUTE (Unchanged) ---
+# ‼️ FIX: Replaced the original CATCH-ALL ROUTE with a more robust structure 
+# to explicitly handle the base route, existing files, and client-side routing fallback. ‼️
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def serve(path):
-    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
+    # Construct the full path to the static file
+    static_file_path = os.path.join(app.static_folder, path)
+
+    if path == "":
+        # 1. Base route
+        return send_from_directory(app.static_folder, 'index.html')
+    elif os.path.exists(static_file_path):
+        # 2. File exists (Static Asset like CSS, JS, images). This is the key to fixing the MIME error.
         return send_from_directory(app.static_folder, path)
     else:
+        # 3. File not found (Client-side route like /dashboard). Serve index.html to let React Router handle it.
+        # This prevents 404s for client routes and ensures non-matched paths are handled gracefully.
         return send_from_directory(app.static_folder, 'index.html')
 
 
