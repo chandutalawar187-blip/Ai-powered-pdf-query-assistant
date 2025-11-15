@@ -652,7 +652,7 @@ def set_active_notes():
 # --- END FILE MANAGER ENDPOINTS ---
 
 
-# --- UPLOAD ENDPOINTS (Unchanged) ---
+# --- UPLOAD ENDPOINTS (Fixed logic) ---
 @app.route('/upload-notes', methods=['POST'])
 @get_user_and_profile
 def upload_notes_pdf():
@@ -673,65 +673,97 @@ def upload_paper_pdf():
     return handle_upload_logic(pdf_file, user_id, user_profile, is_notes_file=False)
 
 
+# --- FIXED handle_upload_logic function ---
 def handle_upload_logic(file, user_id, user_profile, is_notes_file):
     session = get_session_data(user_id)
     file_id = str(uuid.uuid4())
     user_dir = get_user_data_path(user_id)
     file_type = 'notes' if is_notes_file else 'paper'
+
+    # Ensure a filename exists before proceeding
+    if not file.filename:
+        return jsonify({"error": "File name is missing or invalid."}), 400
+    
     file_extension = os.path.splitext(file.filename)[1]
     saved_filename = f"{file_id}{file_extension}"
     file_path = os.path.join(user_dir, saved_filename)
-    file.save(file_path)
+    
+    # --- CRITICAL FIX: Wrap file save and processing in a try/except block ---
+    try:
+        # 1. Save the file (This operation was the main vulnerability for uncaught exceptions)
+        file.save(file_path)
+        print(f"✅ File saved temporarily to: {file_path}")
 
-    if is_notes_file and user_profile['plan'] == 'free':
-        if is_pdf_handwritten(file_path, client):
-            print(f"User {user_id} (free) blocked from uploading handwritten PDF.")
-            os.remove(file_path)
-            return jsonify(
-                {"error": "Handwritten PDFs are a premium feature. Please upgrade to upload this file."}), 403
+        # 2. Handle premium feature check (Handwritten PDF)
+        if is_notes_file and user_profile['plan'] == 'free':
+            if is_pdf_handwritten(file_path, client):
+                print(f"User {user_id} (free) blocked from uploading handwritten PDF.")
+                os.remove(file_path) # Delete the temporary file
+                return jsonify(
+                    {"error": "Handwritten PDFs are a premium feature. Please upgrade to upload this file."}), 403
 
-    success, new_chunks = extract_text_and_chunk(file_path, user_id, file_id, is_notes_file=is_notes_file)
-    if success:
-        file_meta = {
-            'id': file_id,
-            'filename': file.filename,
-            'type': file_type,
-            'path': file_path,
-            'indexed_chunks': len(new_chunks),
-            'uploaded_at': datetime.now().strftime("%Y-%m-%d %H:%M")
-        }
-        if is_notes_file:
-            session['notes_pdf_path'] = file_path
-            session['document_text_chunks'].clear()
-            session['query_history'].clear()
-            session['document_text_chunks'].extend(new_chunks)
-            paper_file_meta = next((f for f in session['uploaded_files'] if f['type'] == 'paper'), None)
-            if paper_file_meta:
-                success, paper_chunks = extract_text_and_chunk(
-                    paper_file_meta['path'], user_id, paper_file_meta['id'], is_notes_file=False
-                )
-                if success:
-                    session['document_text_chunks'].extend(paper_chunks)
-        else:
-            session['paper_pdf_path'] = file_path
-            session['document_text_chunks'].extend(new_chunks)
+        # 3. Extract text and chunk (main processing)
+        success, new_chunks = extract_text_and_chunk(file_path, user_id, file_id, is_notes_file=is_notes_file)
 
-        if is_notes_file:
-            session['uploaded_files'] = [f for f in session['uploaded_files'] if f['filename'] != file_meta['filename']]
-        else:
+        if success:
+            # 4. Success logic: Update session and file metadata
+            file_meta = {
+                'id': file_id,
+                'filename': file.filename,
+                'type': file_type,
+                'path': file_path,
+                'indexed_chunks': len(new_chunks),
+                'uploaded_at': datetime.now().strftime("%Y-%m-%d %H:%M")
+            }
+
+            # Update the active file path and document chunks
+            if is_notes_file:
+                session['notes_pdf_path'] = file_path
+                session['document_text_chunks'].clear()
+                session['query_history'].clear()
+                session['document_text_chunks'].extend(new_chunks)
+                
+                # Re-index paper if present to combine contexts
+                paper_file_meta = next((f for f in session['uploaded_files'] if f['type'] == 'paper'), None)
+                if paper_file_meta:
+                    success, paper_chunks = extract_text_and_chunk(
+                        paper_file_meta['path'], user_id, paper_file_meta['id'], is_notes_file=False
+                    )
+                    if success:
+                        session['document_text_chunks'].extend(paper_chunks)
+            else:
+                session['paper_pdf_path'] = file_path
+                session['document_text_chunks'].extend(new_chunks)
+
+            # 5. Remove the OLD file of the same type and add the NEW one. 
+            # FIX: Unify and simplify the logic for cleaning up old files by type.
             session['uploaded_files'] = [f for f in session['uploaded_files'] if f['type'] != file_type]
+            session['uploaded_files'].append(file_meta)
+            
+            save_session_data(user_id, session)
 
-        session['uploaded_files'].append(file_meta)
-        save_session_data(user_id, session)
-        return jsonify(
-            {"message": f"{file_type.capitalize()} processed successfully. {len(new_chunks)} chunks indexed.",
-             "chunks_count": len(new_chunks)}), 200
-    else:
+            return jsonify(
+                {"message": f"{file_type.capitalize()} processed successfully. {len(new_chunks)} chunks indexed.",
+                 "chunks_count": len(new_chunks)}), 200
+        else:
+            # 6. Failed Processing logic: delete temporary file and return 500
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            return jsonify({"error": f"Failed to process {file_type.capitalize()} PDF. The file may be corrupt, password-protected, or require extensive OCR."}), 500
+
+    except Exception as e:
+        # 7. Catch all other errors (e.g., file save error, disk full, permission issue)
+        print(f"CRITICAL UPLOAD ERROR for user {user_id}: {e}")
+        traceback.print_exc()
+        
+        # Attempt cleanup if the file was saved before the exception
         if os.path.exists(file_path):
-            os.remove(file_path)
-        return jsonify({"error": f"Failed to process {file_type.capitalize()} PDF."}), 500
+            try:
+                os.remove(file_path)
+            except Exception as cleanup_e:
+                print(f"Failed to clean up file {file_path} after error: {cleanup_e}")
 
-
+        return jsonify({"error": f"Internal server error during upload: Failed to save or process file. Please check file format and server logs for details."}), 500
 # --- END UPLOAD ENDPOINTS ---
 
 
